@@ -131,3 +131,76 @@ def test_voice_input_is_not_sent_to_another_ai_provider(monkeypatch):
     }
     asyncio.run(bot.process_message(object(), message))
     assert any(method == "sendMessage" and "ورودی صوتی" in payload["text"] for method, payload in calls)
+
+
+def test_start_message_includes_inline_menu(monkeypatch):
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    message = {
+        "from": {"id": 123},
+        "chat": {"id": 123, "type": "private"},
+        "message_id": 10,
+        "text": "/start",
+    }
+    asyncio.run(bot.process_message(object(), message))
+    assert len(calls) == 1
+    method, payload = calls[0]
+    assert method == "sendMessage"
+    assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
+    callback_data = {
+        button["callback_data"]
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    }
+    assert callback_data == {"menu:search", "menu:remind", "menu:help"}
+
+
+def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    callback = {
+        "id": "callback-1",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 999, "type": "private"}},
+        "data": "menu:help",
+    }
+    asyncio.run(bot.process_callback_query(object(), callback))
+    assert len(calls) == 1
+    method, payload = calls[0]
+    assert method == "answerCallbackQuery"
+    assert payload["show_alert"] is True
+    assert "خصوصی" in payload["text"]
+
+
+def test_reminder_callback_returns_instructions_and_menu(monkeypatch):
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    callback = {
+        "id": "callback-2",
+        "from": {"id": 123},
+        "message": {"chat": {"id": 123, "type": "private"}},
+        "data": "menu:remind",
+    }
+    asyncio.run(bot.process_callback_query(object(), callback))
+    assert [method for method, _ in calls] == ["answerCallbackQuery", "sendMessage"]
+    payload = calls[1][1]
+    assert "/remind 30m" in payload["text"]
+    assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
