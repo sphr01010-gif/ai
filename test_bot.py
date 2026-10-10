@@ -62,9 +62,9 @@ def test_unauthorized_user_is_not_processed(tmp_path, monkeypatch):
     assert "secret text" not in str(calls[0][1])
 
 
-def test_monica_chat_uses_monica_endpoint_and_bearer_key(monkeypatch):
-    monkeypatch.setattr(bot, "MONICA_API_KEY", "test-key")
-    monkeypatch.setattr(bot, "MODEL", "gemini-3-flash-preview")
+def test_apmix_chat_uses_openai_compatible_endpoint_and_bearer_key(monkeypatch):
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "test-key")
+    monkeypatch.setattr(bot, "MODEL", "claude-sonnet-4-6-free")
 
     class FakeResponse:
         status_code = 200
@@ -83,26 +83,26 @@ def test_monica_chat_uses_monica_endpoint_and_bearer_key(monkeypatch):
             return FakeResponse()
 
     client = FakeClient()
-    result = asyncio.run(bot.monica_chat(client, [{"role": "user", "content": "hi"}]))
+    result = asyncio.run(bot.apmix_chat(client, [{"role": "user", "content": "hi"}]))
     assert result["choices"][0]["message"]["content"] == "hello"
     url, kwargs = client.call
-    assert url == "https://openapi.monica.im/v1/chat/completions"
+    assert url == "https://api.apmix.ai/v1/chat/completions"
     assert kwargs["headers"]["Authorization"] == "Bearer test-key"
-    assert kwargs["json"]["model"] == "gemini-3-flash-preview"
+    assert kwargs["json"]["model"] == "claude-sonnet-4-6-free"
 
 
-def test_monica_chat_requires_monica_key(monkeypatch):
-    monkeypatch.setattr(bot, "MONICA_API_KEY", "")
+def test_apmix_chat_requires_apmix_key(monkeypatch):
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "")
 
     class FakeClient:
         async def post(self, *args, **kwargs):
             raise AssertionError("API must not be called without a key")
 
     try:
-        asyncio.run(bot.monica_chat(FakeClient(), []))
+        asyncio.run(bot.apmix_chat(FakeClient(), []))
         assert False, "expected missing-key error"
     except RuntimeError as exc:
-        assert "MONICA_API_KEY" in str(exc)
+        assert "APMIX_API_KEY" in str(exc)
 
 
 def test_web_search_trigger_detection():
@@ -119,11 +119,11 @@ def test_voice_input_is_not_sent_to_another_ai_provider(monkeypatch):
         calls.append((method, payload))
         return True
 
-    async def forbidden_monica_call(*args, **kwargs):
+    async def forbidden_apmix_call(*args, **kwargs):
         raise AssertionError("voice should not be forwarded to an undocumented API")
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    monkeypatch.setattr(bot, "monica_chat", forbidden_monica_call)
+    monkeypatch.setattr(bot, "apmix_chat", forbidden_apmix_call)
     message = {
         "from": {"id": 123},
         "chat": {"id": 123, "type": "private"},

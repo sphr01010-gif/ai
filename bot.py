@@ -1,4 +1,4 @@
-"""Personal Telegram AI assistant: long polling, Monica API, Tavily and SQLite reminders."""
+"""Personal Telegram AI assistant: long polling, APMIX, Tavily and SQLite reminders."""
 from __future__ import annotations
 
 import asyncio
@@ -26,15 +26,15 @@ logging.basicConfig(
 log = logging.getLogger("personal_telegram_bot")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-MONICA_API_KEY = os.getenv("MONICA_API_KEY", "").strip()
+APMIX_API_KEY = os.getenv("APMIX_API_KEY", "").strip()
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
-MODEL = os.getenv("MONICA_MODEL", "gemini-3-flash-preview").strip()
+MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Tehran").strip()
 DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "/data" if Path("/data").exists() else "./data"))
 DB_PATH = Path(os.getenv("DATABASE_PATH", str(DATA_DIR / "assistant.sqlite3")))
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-MONICA_API = "https://openapi.monica.im/v1/chat/completions"
+APMIX_API = "https://api.apmix.ai/v1/chat/completions"
 TZ = ZoneInfo(TIMEZONE_NAME)
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_DOC_CHARS = 28_000
@@ -203,15 +203,15 @@ async def tavily_search(client: httpx.AsyncClient, query: str) -> dict[str, Any]
     return {"answer": data.get("answer", ""), "results": results}
 
 
-async def monica_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
-    if not MONICA_API_KEY:
-        raise RuntimeError("MONICA_API_KEY is not configured")
+async def apmix_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    if not APMIX_API_KEY:
+        raise RuntimeError("APMIX_API_KEY is not configured")
     payload: dict[str, Any] = {"model": model or MODEL, "messages": messages, "temperature": 0.6, "max_tokens": 1300}
-    response = await client.post(MONICA_API, headers={"Authorization": f"Bearer {MONICA_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=100)
+    response = await client.post(APMIX_API, headers={"Authorization": f"Bearer {APMIX_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=100)
     if response.status_code >= 400:
         # Never include secrets or raw request headers in logs/messages.
         detail = response.text[:700]
-        raise RuntimeError(f"Monica API HTTP {response.status_code}: {detail}")
+        raise RuntimeError(f"APMIX API HTTP {response.status_code}: {detail}")
     return response.json()
 
 
@@ -231,7 +231,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
         elif search_result.get("error"):
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": user_content}]
-    completion = await monica_chat(client, messages, model=model)
+    completion = await apmix_chat(client, messages, model=model)
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
     if citations:
         unique: list[dict[str, str]] = []
@@ -265,7 +265,7 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str) -> str:
         "with [1], [2], etc. Do not invent facts.\n\n"
         f"User request: {query}\n\nSearch results:\n{sources}"
     )
-    response = await monica_chat(client, [
+    response = await apmix_chat(client, [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ])
@@ -356,7 +356,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             ]
             answer = await assistant_reply(client, user_id, content, use_history=False)
         elif message.get("voice") or message.get("audio"):
-            await send_text(client, chat_id, "در حال حاضر مستندات Monica API ورودی صوتی را برای این مسیر تأیید نمی‌کنند؛ لطفاً درخواستت را به‌صورت متن بفرست.", reply_to)
+            await send_text(client, chat_id, "در حال حاضر ورودی صوتی در این اتصال APMIX مستند/آزمایش نشده است؛ لطفاً درخواستت را به‌صورت متن بفرست.", reply_to)
             return
         elif message.get("document"):
             doc = message["document"]
@@ -384,8 +384,8 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
         message_text = str(exc)
         if "TAVILY_API_KEY" in message_text:
             await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to)
-        elif "MONICA_API_KEY" in message_text:
-            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ MONICA_API_KEY را در Railway Variables وارد کن.", reply_to)
+        elif "APMIX_API_KEY" in message_text:
+            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ APMIX_API_KEY را در Railway Variables وارد کن.", reply_to)
         else:
             await send_text(client, chat_id, f"نتوانستم این پیام را پردازش کنم: {message_text[:500]}", reply_to)
 
@@ -407,7 +407,7 @@ async def reminder_loop(client: httpx.AsyncClient) -> None:
 
 
 async def run() -> None:
-    missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID), ("MONICA_API_KEY", MONICA_API_KEY)) if not value]
+    missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID), ("APMIX_API_KEY", APMIX_API_KEY)) if not value]
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     try:
