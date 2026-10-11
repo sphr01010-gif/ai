@@ -29,6 +29,10 @@ log = logging.getLogger("personal_telegram_bot")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 APMIX_API_KEY = os.getenv("APMIX_API_KEY", "").strip()
+TOOKEN_API_KEY = os.getenv("TOOKEN_API_KEY", "").strip()
+TOOKEN_API_BASE_URL = os.getenv("TOOKEN_API_BASE_URL", "").strip().rstrip("/")
+TOOKEN_MODEL = os.getenv("TOOKEN_MODEL", "").strip()
+AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,tooken").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
@@ -638,6 +642,7 @@ async def tavily_search(client: httpx.AsyncClient, query: str, *, deep: bool = F
 
 
 async def apmix_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Call the existing APMIX OpenAI-compatible endpoint."""
     if not APMIX_API_KEY:
         raise RuntimeError("APMIX_API_KEY is not configured")
     payload: dict[str, Any] = {"model": model or MODEL, "messages": messages, "temperature": 0.6, "max_tokens": 1300}
@@ -647,6 +652,48 @@ async def apmix_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], 
         detail = response.text[:700]
         raise RuntimeError(f"APMIX API HTTP {response.status_code}: {detail}")
     return response.json()
+
+
+async def tooken_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Call Tooken's OpenAI-compatible endpoint using independent Railway settings."""
+    if not TOOKEN_API_KEY:
+        raise RuntimeError("TOOKEN_API_KEY is not configured")
+    if not TOOKEN_API_BASE_URL:
+        raise RuntimeError("TOOKEN_API_BASE_URL is not configured")
+    selected_model = model or TOOKEN_MODEL
+    if not selected_model:
+        raise RuntimeError("TOOKEN_MODEL is not configured")
+    url = TOOKEN_API_BASE_URL if TOOKEN_API_BASE_URL.endswith("/chat/completions") else f"{TOOKEN_API_BASE_URL}/chat/completions"
+    payload: dict[str, Any] = {"model": selected_model, "messages": messages, "temperature": 0.6, "max_tokens": 1300}
+    response = await client.post(url, headers={"Authorization": f"Bearer {TOOKEN_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=100)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Tooken API HTTP {response.status_code}: {response.text[:700]}")
+    return response.json()
+
+
+async def model_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Try available providers in configured order and automatically fall back on errors."""
+    providers = {
+        "apmix": (bool(APMIX_API_KEY), apmix_chat),
+        "tooken": (bool(TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL), tooken_chat),
+    }
+    errors: list[str] = []
+    visited: set[str] = set()
+    for name in AI_PROVIDER_ORDER + ["apmix", "tooken"]:
+        if name in visited or name not in providers:
+            continue
+        visited.add(name)
+        configured, caller = providers[name]
+        if not configured:
+            continue
+        try:
+            return await caller(client, messages, model=model if name == "apmix" else None)
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            log.warning("AI provider %s failed (%s); trying next configured provider", name, type(exc).__name__)
+            errors.append(f"{name}: {type(exc).__name__}")
+    if not errors:
+        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY or all Tooken variables.")
+    raise RuntimeError("All configured AI providers failed: " + "; ".join(errors))
 
 
 async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content: Any, *, use_history: bool = True, model: str | None = None) -> str:
@@ -682,7 +729,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
         elif search_result.get("error"):
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_content}]
-    completion = await apmix_chat(client, messages, model=model)
+    completion = await model_chat(client, messages, model=model)
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
     if citations:
         unique: list[dict[str, str]] = []
@@ -719,7 +766,7 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compar
         instruction + "Cite factual claims with [1], [2], etc. Do not invent facts or treat snippets as definitive.\n\n"
         f"User request: {query}\n\nSearch results:\n{sources}"
     )
-    response = await apmix_chat(client, [
+    response = await model_chat(client, [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ])
@@ -1295,8 +1342,8 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
         message_text = str(exc)
         if "TAVILY_API_KEY" in message_text:
             await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to, MAIN_MENU_MARKUP)
-        elif "APMIX_API_KEY" in message_text:
-            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ APMIX_API_KEY را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
+        elif "No AI provider is configured" in message_text or "not configured" in message_text:
+            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ کلید APMIX یا هر سه متغیر TOOKEN_API_KEY، TOOKEN_API_BASE_URL و TOOKEN_MODEL را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
         else:
             await send_text(client, chat_id, f"نتوانستم این پیام را پردازش کنم: {message_text[:500]}", reply_to, MAIN_MENU_MARKUP)
 
@@ -1395,7 +1442,7 @@ async def send_personal_summary(client: httpx.AsyncClient, user_id: int, *, week
     )
     settings = get_user_settings(user_id)
     language_rule = {"fa": "Answer only in Persian.", "en": "Answer only in English."}.get(settings.get("language"), "Answer in Persian.")
-    completion = await apmix_chat(client, [
+    completion = await model_chat(client, [
         {"role": "system", "content": SYSTEM_PROMPT + " " + language_rule},
         {"role": "user", "content": prompt},
     ])
@@ -1451,7 +1498,9 @@ async def reminder_loop(client: httpx.AsyncClient) -> None:
 
 
 async def run() -> None:
-    missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID), ("APMIX_API_KEY", APMIX_API_KEY)) if not value]
+    missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID)) if not value]
+    if not APMIX_API_KEY and not (TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL):
+        missing.append("APMIX_API_KEY or TOOKEN_API_KEY + TOOKEN_API_BASE_URL + TOOKEN_MODEL")
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     try:
@@ -1459,7 +1508,7 @@ async def run() -> None:
     except ValueError as exc:
         raise SystemExit("TELEGRAM_ALLOWED_USER_ID must be a numeric Telegram user ID") from exc
     init_db()
-    log.info("Starting private Telegram assistant; model=%s timezone=%s", MODEL, TIMEZONE_NAME)
+    log.info("Starting private Telegram assistant; provider_order=%s timezone=%s", ",".join(AI_PROVIDER_ORDER), TIMEZONE_NAME)
     async with httpx.AsyncClient() as client:
         me = await telegram_call(client, "getMe", {})
         log.info("Telegram bot connected as @%s", me.get("username", "unknown"))
