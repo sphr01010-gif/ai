@@ -55,11 +55,24 @@ SYSTEM_PROMPT = (
 )
 
 MAIN_MENU_MARKUP = {
-    "keyboard": [[{"text": "گفت‌وگو"}, {"text": "جست‌وجوی وب"}]],
+    "keyboard": [
+        [{"text": "گفت‌وگو"}, {"text": "جست‌وجوی وب"}],
+        [{"text": "انتخاب API"}],
+    ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
-    "input_field_placeholder": "پیام بفرست یا جست‌وجوی وب را انتخاب کن",
+    "input_field_placeholder": "گفت‌وگو، جست‌وجو یا انتخاب API",
+}
+
+AI_PROVIDER_MARKUP = {
+    "keyboard": [
+        [{"text": "APMIX"}, {"text": "Tooken"}],
+        [{"text": "خودکار"}, {"text": "بازگشت"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "ارائه‌دهندهٔ چت را انتخاب کن",
 }
 
 CLEAR_CONFIRM_MARKUP = {
@@ -149,23 +162,23 @@ MEMORY_CONFIRM_MARKUP = {
 }
 
 REMOVED_MENU_BUTTON_LABELS = {
-    "مقایسهٔ منابع", "ثبت یادآوری", "یادآوری‌های من", "بررسی عکس/سند",
-    "حافظهٔ شخصی", "تنظیمات", "خلاصه‌ها", "پاک‌کردن حافظه", "راهنما",
-    "تأیید پاک‌کردن", "لغو", "بازگشت به منو", "حالت پاسخ", "لحن پاسخ",
-    "زبان پاسخ", "حافظهٔ گفتگو", "استفاده از یادداشت‌ها", "خروجی یادآوری‌ها",
-    "ساعت خلاصه", "موضوعات پیگیری", "ثبت یادداشت", "یادداشت‌های من",
-    "پاک‌کردن همهٔ یادداشت‌ها", "سؤال از فایل", "خلاصهٔ فایل", "فراموش‌کردن فایل",
-    "خلاصهٔ روزانه", "خلاصهٔ هفتگی", "افزودن موضوع پیگیری", "موضوعات من",
-    "پاسخ معمولی", "پاسخ کوتاه", "پاسخ مشروح", "آموزشی", "ایده‌پردازی", "پژوهش",
-    "لحن دوستانه", "لحن رسمی", "لحن خودمانی", "زبان خودکار", "فارسی", "English",
-    "تأیید یادآوری", "ویرایش زمان", "لغو یادآوری", "تأیید حذف یادداشت‌ها", "انصراف",
+    "ثبت یادآوری", "بررسی عکس/سند", "تنظیمات", "مقایسهٔ منابع",
+    "یادآوری‌های من", "حافظهٔ شخصی", "خلاصه‌ها", "پاک‌کردن حافظه", "راهنما",
 }
 
-MENU_BUTTON_ACTIONS = {"گفت‌وگو": "chat", "جست‌وجوی وب": "search"}
+MENU_BUTTON_ACTIONS = {
+    "گفت‌وگو": "chat",
+    "جست‌وجوی وب": "search",
+    "انتخاب API": "provider_menu",
+    "APMIX": "select_provider_apmix",
+    "Tooken": "select_provider_tooken",
+    "خودکار": "select_provider_auto",
+    "بازگشت": "home",
+}
 
 HELP_TEXT = (
     "سلام! من دستیار هوش مصنوعی تو هستم.\n\n"
-    "برای گفت‌وگو، پیام عادی بفرست؛ برای جست‌وجوی وب، دکمهٔ «جست‌وجوی وب» را بزن و پرسشت را ارسال کن."
+    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX یا Tooken را برای چت برگزینی."
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
@@ -259,6 +272,7 @@ DEFAULT_USER_SETTINGS = {
     "tone": "friendly",
     "history_enabled": True,
     "personal_memory_enabled": True,
+    "ai_provider": "auto",
     "daily_summary": False,
     "weekly_summary": False,
     "summary_hour": 9,
@@ -291,6 +305,8 @@ def set_user_setting(user_id: int, name: str, value: Any) -> dict[str, Any]:
     settings = get_user_settings(user_id)
     if name not in DEFAULT_USER_SETTINGS:
         raise ValueError("Unknown user setting")
+    if name == "ai_provider" and value not in {"auto", "apmix", "tooken"}:
+        raise ValueError("Invalid AI provider")
     settings[name] = value
     save_user_settings(user_id, settings)
     return settings
@@ -608,15 +624,29 @@ async def tooken_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]],
     return response.json()
 
 
-async def model_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
-    """Try available providers in configured order and automatically fall back on errors."""
+async def model_chat(
+    client: httpx.AsyncClient,
+    messages: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Use one explicitly selected provider, or configured order with fallback in auto mode."""
     providers = {
         "apmix": (bool(APMIX_API_KEY), apmix_chat),
         "tooken": (bool(TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL), tooken_chat),
     }
+    if provider is not None:
+        if provider not in providers:
+            raise ValueError("Unknown AI provider")
+        if not providers[provider][0]:
+            raise RuntimeError(f"Selected provider {provider} is not configured")
+        provider_order = [provider]
+    else:
+        provider_order = AI_PROVIDER_ORDER + ["apmix", "tooken"]
     errors: list[str] = []
     visited: set[str] = set()
-    for name in AI_PROVIDER_ORDER + ["apmix", "tooken"]:
+    for name in provider_order:
         if name in visited or name not in providers:
             continue
         visited.add(name)
@@ -666,7 +696,10 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
         elif search_result.get("error"):
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_content}]
-    completion = await model_chat(client, messages, model=model)
+    selected_provider = settings.get("ai_provider", "auto")
+    if selected_provider not in {"apmix", "tooken"}:
+        selected_provider = None
+    completion = await model_chat(client, messages, model=model, provider=selected_provider)
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
     if citations:
         unique: list[dict[str, str]] = []
@@ -833,7 +866,28 @@ async def handle_menu_action(
     action: str,
     reply_to: int | None = None,
 ) -> None:
-    if action == "chat":
+    if action == "provider_menu":
+        selected = get_user_settings(user_id).get("ai_provider", "auto")
+        labels = {"auto": "خودکار (ترتیب پیش‌فرض و fallback)", "apmix": "APMIX", "tooken": "Tooken"}
+        await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\n"
+                        "انتخاب دستی فقط از همان سرویس استفاده می‌کند و در صورت خطا به سرویس دیگر نمی‌رود.",
+                        reply_to, AI_PROVIDER_MARKUP)
+    elif action == "select_provider_apmix":
+        if not APMIX_API_KEY:
+            await send_text(client, chat_id, "APMIX پیکربندی نشده است؛ APMIX_API_KEY را در Railway Variables تنظیم کن.", reply_to, AI_PROVIDER_MARKUP)
+        else:
+            set_user_setting(user_id, "ai_provider", "apmix")
+            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید APMIX ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "select_provider_tooken":
+        if not (TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL):
+            await send_text(client, chat_id, "Tooken هنوز کامل پیکربندی نشده است؛ TOOKEN_API_KEY، TOOKEN_API_BASE_URL و TOOKEN_MODEL را در Railway Variables تنظیم کن.", reply_to, AI_PROVIDER_MARKUP)
+        else:
+            set_user_setting(user_id, "ai_provider", "tooken")
+            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید Tooken ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "select_provider_auto":
+        set_user_setting(user_id, "ai_provider", "auto")
+        await send_text(client, chat_id, "حالت خودکار فعال شد؛ بات طبق AI_PROVIDER_ORDER ارائه‌دهنده‌ها را امتحان می‌کند و در صورت خطا fallback می‌کند.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "chat":
         set_user_state(user_id, "chat")
         await send_text(client, chat_id, "حالت گفت‌وگو آماده است؛ پیام یا پرسشت را بفرست.", reply_to, MAIN_MENU_MARKUP)
     elif action in {"search", "compare_search"}:
