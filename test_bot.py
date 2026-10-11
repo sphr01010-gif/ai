@@ -190,7 +190,7 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب"}
+    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "انتخاب API"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
 
@@ -204,7 +204,9 @@ def test_removed_menu_options_are_hidden_and_inert(tmp_path, monkeypatch):
         "ثبت یادآوری", "بررسی عکس/سند", "تنظیمات", "مقایسهٔ منابع",
         "یادآوری‌های من", "حافظهٔ شخصی", "خلاصه‌ها", "پاک‌کردن حافظه", "راهنما",
     }
-    assert bot.MENU_BUTTON_ACTIONS == {"گفت‌وگو": "chat", "جست‌وجوی وب": "search"}
+    assert bot.MENU_BUTTON_ACTIONS["گفت‌وگو"] == "chat"
+    assert bot.MENU_BUTTON_ACTIONS["جست‌وجوی وب"] == "search"
+    assert bot.MENU_BUTTON_ACTIONS["انتخاب API"] == "provider_menu"
     assert removed <= bot.REMOVED_MENU_BUTTON_LABELS
 
     async def fake_telegram_call(client, method, payload):
@@ -506,3 +508,76 @@ def test_model_chat_falls_back_from_apmix_to_tooken(monkeypatch):
     result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}]))
     assert result["choices"][0]["message"]["content"] == "fallback worked"
     assert calls == ["apmix", "tooken"]
+
+
+
+def test_provider_selection_persists_and_requires_configuration(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "provider-selection.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    bot.init_db()
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "انتخاب API"}))
+    assert calls[-1][1]["reply_markup"] == bot.AI_PROVIDER_MARKUP
+    asyncio.run(bot.process_message(object(), {**base, "text": "Tooken"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "tooken"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+
+    asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "apmix"
+    asyncio.run(bot.process_message(object(), {**base, "text": "خودکار"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "auto"
+
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "")
+    asyncio.run(bot.process_message(object(), {**base, "text": "Tooken"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "auto"
+    assert "TOOKEN_API_KEY" in calls[-1][1]["text"]
+
+
+def test_assistant_reply_uses_the_user_selected_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "provider-chat.sqlite3")
+    bot.init_db()
+    bot.set_user_setting(123, "ai_provider", "tooken")
+    observed = []
+
+    async def fake_model_chat(client, messages, *, model=None, provider=None):
+        observed.append(provider)
+        return {"choices": [{"message": {"content": "Tooken response"}}]}
+
+    monkeypatch.setattr(bot, "model_chat", fake_model_chat)
+    result = asyncio.run(bot.assistant_reply(object(), 123, "سلام"))
+    assert result == "Tooken response"
+    assert observed == ["tooken"]
+
+
+def test_explicit_provider_selection_does_not_fallback(monkeypatch):
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "tooken"])
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    calls = []
+
+    async def unexpected_apmix(*args, **kwargs):
+        calls.append("apmix")
+        raise AssertionError("selected Tooken must not call APMIX")
+
+    async def succeed_tooken(*args, **kwargs):
+        calls.append("tooken")
+        return {"choices": [{"message": {"content": "selected Tooken"}}]}
+
+    monkeypatch.setattr(bot, "apmix_chat", unexpected_apmix)
+    monkeypatch.setattr(bot, "tooken_chat", succeed_tooken)
+    result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="tooken"))
+    assert result["choices"][0]["message"]["content"] == "selected Tooken"
+    assert calls == ["tooken"]
