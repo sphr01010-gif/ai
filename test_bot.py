@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import bot
 
@@ -18,6 +18,31 @@ def test_relative_reminder_parsing():
     assert 29 * 60 <= (due - datetime.now(bot.TZ)).total_seconds() <= 31 * 60
 
 
+def test_persian_relative_reminder_parsing():
+    parsed = bot.parse_reminder_input("۳۰ دقیقه دیگر تماس")
+    assert parsed is not None
+    due, text, recurrence = parsed
+    assert text == "تماس" and recurrence == ""
+    assert 29 * 60 <= (due - datetime.now(bot.TZ)).total_seconds() <= 31 * 60
+
+
+def test_tomorrow_morning_is_parsed_for_confirmation():
+    parsed = bot.parse_reminder_input("فردا صبح تماس با علی")
+    assert parsed is not None
+    due, text, recurrence = parsed
+    assert due.date() == (datetime.now(bot.TZ).date() + timedelta(days=1))
+    assert due.hour == 9 and due.minute == 0
+    assert text == "تماس با علی" and recurrence == ""
+
+
+def test_daily_and_weekly_reminder_recurrence():
+    daily = bot.parse_reminder_input("هر روز ساعت ۸:۳۰ دارو")
+    weekly = bot.parse_reminder_input("هر هفته شنبه ساعت ۹:۰۰ خرید")
+    assert daily and daily[2] == "daily" and daily[1] == "دارو"
+    assert weekly and weekly[2] == "weekly" and weekly[1] == "خرید"
+    assert daily[0].tzinfo is not None and weekly[0].tzinfo is not None
+
+
 def test_absolute_reminder_parsing_uses_tehran_timezone():
     parsed = bot.parse_reminder_command("2999-05-04 09:25 آزمایش")
     assert parsed is not None
@@ -32,17 +57,33 @@ def test_invalid_or_past_reminder_is_rejected():
     assert bot.parse_reminder_command("/remind 2999-99-99 09:25 bad") is None
     assert bot.parse_reminder_command("/remind 2000-01-01 00:01 old") is None
     assert bot.parse_reminder_command("/remind after lunch") is None
+    assert bot.parse_reminder_input("هر روز ساعت 99 دارو") is None
+    assert bot.parse_reminder_input("0m همین الان") is None
 
 
-def test_reminder_persistence(tmp_path, monkeypatch):
+def test_reminder_persistence_and_daily_recurrence(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "test.sqlite3")
     bot.init_db()
-    due = datetime(2000, 5, 4, 9, 25, tzinfo=bot.TZ)
-    bot.add_reminder(1234, due, "persistent")
+    due = datetime.now(bot.TZ) - timedelta(minutes=1)
+    reminder_id = bot.add_reminder(1234, due, "persistent", "daily")
     rows = bot.take_due_reminders()
-    assert any(row[1] == 1234 and row[2] == "persistent" for row in rows)
-    bot.mark_reminder_sent(rows[0][0])
+    assert any(row[0] == reminder_id and row[1] == 1234 and row[2] == "persistent" for row in rows)
+    bot.mark_reminder_sent(reminder_id)
     assert bot.take_due_reminders() == []
+    item = bot.get_reminder(1234, reminder_id)
+    assert item is not None and item[3] == "daily" and item[4] == 0
+    assert datetime.fromisoformat(item[1]) > datetime.now(bot.TZ)
+
+
+def test_snooze_creates_a_one_off_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "snooze.sqlite3")
+    bot.init_db()
+    reminder_id = bot.add_reminder(123, datetime.now(bot.TZ) - timedelta(minutes=1), "call", "weekly")
+    assert bot.snooze_reminder(123, reminder_id, 10)
+    reminders = bot.list_reminders(123, limit=10)
+    assert len(reminders) == 2
+    snoozed = [bot.get_reminder(123, row[0]) for row in reminders if row[0] != reminder_id][0]
+    assert snoozed[2] == "call" and snoozed[3] == ""
 
 
 def test_unauthorized_user_is_not_processed(tmp_path, monkeypatch):
@@ -122,15 +163,11 @@ def test_voice_input_is_not_sent_to_another_ai_provider(tmp_path, monkeypatch):
         return True
 
     async def forbidden_apmix_call(*args, **kwargs):
-        raise AssertionError("voice should not be forwarded to an undocumented API")
+        raise AssertionError("unsupported voice must not be forwarded to an unverified endpoint")
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
     monkeypatch.setattr(bot, "apmix_chat", forbidden_apmix_call)
-    message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "voice": {"file_id": "voice-file"},
-    }
+    message = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "voice": {"file_id": "voice-file"}}
     asyncio.run(bot.process_message(object(), message))
     assert any(method == "sendMessage" and "ورودی صوتی" in payload["text"] for method, payload in calls)
 
@@ -146,23 +183,14 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "message_id": 10,
-        "text": "/start",
-    }
+    message = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "message_id": 10, "text": "/start"}
     asyncio.run(bot.process_message(object(), message))
     assert len(calls) == 1
     method, payload = calls[0]
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
-    button_labels = {
-        button["text"]
-        for row in payload["reply_markup"]["keyboard"]
-        for button in row
-    }
-    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "ثبت یادآوری", "یادآوری‌های من", "بررسی عکس/سند", "پاک‌کردن حافظه", "راهنما"}
+    button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
+    assert {"گفت‌وگو", "جست‌وجوی وب", "ثبت یادآوری", "یادآوری‌های من", "بررسی عکس/سند", "حافظهٔ شخصی", "تنظیمات", "خلاصه‌ها"}.issubset(button_labels)
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
 
@@ -176,12 +204,7 @@ def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    callback = {
-        "id": "callback-1",
-        "from": {"id": 999},
-        "message": {"chat": {"id": 999, "type": "private"}},
-        "data": "menu:help",
-    }
+    callback = {"id": "callback-1", "from": {"id": 999}, "message": {"chat": {"id": 999, "type": "private"}}, "data": "menu:help"}
     asyncio.run(bot.process_callback_query(object(), callback))
     assert len(calls) == 1
     method, payload = calls[0]
@@ -190,7 +213,7 @@ def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
     assert "خصوصی" in payload["text"]
 
 
-def test_reminder_callback_returns_instructions_and_menu(tmp_path, monkeypatch):
+def test_reminder_button_explains_natural_input(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-callback.sqlite3")
     bot.init_db()
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
@@ -201,30 +224,25 @@ def test_reminder_callback_returns_instructions_and_menu(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    callback = {
-        "id": "callback-2",
-        "from": {"id": 123},
-        "message": {"chat": {"id": 123, "type": "private"}},
-        "data": "menu:remind",
-    }
+    callback = {"id": "callback-2", "from": {"id": 123}, "message": {"chat": {"id": 123, "type": "private"}}, "data": "menu:remind"}
     asyncio.run(bot.process_callback_query(object(), callback))
     assert [method for method, _ in calls] == ["answerCallbackQuery", "sendMessage"]
     payload = calls[1][1]
-    assert "30m تماس با علی" in payload["text"]
+    assert "۳۰ دقیقه دیگر تماس با علی" in payload["text"]
     assert "/remind" not in payload["text"]
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     assert bot.get_user_state(123) == "await_reminder"
 
 
-def test_search_button_routes_next_plain_text_to_web_search(tmp_path, monkeypatch):
+def test_search_button_routes_plain_text_to_web_search(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "search-flow.sqlite3")
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     bot.init_db()
     queries = []
     calls = []
 
-    async def fake_search(client, query):
-        queries.append(query)
+    async def fake_search(client, query, *, compare=False):
+        queries.append((query, compare))
         return "search result"
 
     async def fake_telegram_call(client, method, payload):
@@ -233,30 +251,40 @@ def test_search_button_routes_next_plain_text_to_web_search(tmp_path, monkeypatc
 
     monkeypatch.setattr(bot, "explicit_search_reply", fake_search)
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    menu_message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "message_id": 10,
-        "text": "جست‌وجوی وب",
-    }
-    asyncio.run(bot.process_message(object(), menu_message))
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 10, "text": "جست‌وجوی وب"}))
     assert bot.get_user_state(123) == "await_search"
-    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
-    message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "message_id": 11,
-        "text": "latest space news",
-    }
-    asyncio.run(bot.process_message(object(), message))
-    assert queries == ["latest space news"]
-    assert calls[-1][0] == "sendMessage"
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 11, "text": "latest space news"}))
+    assert queries == [("latest space news", False)]
     assert calls[-1][1]["text"] == "search result"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
     assert bot.get_user_state(123) is None
 
 
-def test_reminder_button_accepts_plain_text_and_stores_it(tmp_path, monkeypatch):
+def test_comparison_button_uses_deep_search_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "compare.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+    searches = []
+
+    async def fake_search(client, query, *, compare=False):
+        searches.append((query, compare))
+        return "sources"
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "explicit_search_reply", fake_search)
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "مقایسهٔ منابع"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "مقایسه دو گوشی"}))
+    assert searches == [("مقایسه دو گوشی", True)]
+
+
+def test_reminder_requires_confirmation_before_save(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-flow.sqlite3")
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     bot.init_db()
@@ -267,26 +295,39 @@ def test_reminder_button_accepts_plain_text_and_stores_it(tmp_path, monkeypatch)
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    menu_message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "message_id": 11,
-        "text": "ثبت یادآوری",
-    }
-    asyncio.run(bot.process_message(object(), menu_message))
-    assert bot.get_user_state(123) == "await_reminder"
-    message = {
-        "from": {"id": 123},
-        "chat": {"id": 123, "type": "private"},
-        "message_id": 12,
-        "text": "30m تماس با علی",
-    }
-    asyncio.run(bot.process_message(object(), message))
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "ثبت یادآوری"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "۳۰ دقیقه دیگر تماس با علی"}))
+    assert bot.list_reminders(123) == []
+    assert (bot.get_user_state(123) or "").startswith("pending_reminder:")
+    assert calls[-1][1]["reply_markup"] == bot.REMINDER_CONFIRM_MARKUP
+    asyncio.run(bot.process_message(object(), {**base, "text": "تأیید یادآوری"}))
     reminders = bot.list_reminders(123)
-    assert len(reminders) == 1
-    assert reminders[0][2] == "تماس با علی"
-    assert "/remind" not in calls[-1][1]["text"]
+    assert len(reminders) == 1 and reminders[0][2] == "تماس با علی"
     assert bot.get_user_state(123) is None
+
+
+def test_reminder_edit_flow_updates_existing_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "edit-reminder.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    existing_id = bot.add_reminder(123, datetime(2999, 5, 4, 9, 0, tzinfo=bot.TZ), "old")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "یادآوری‌های من"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "ویرایش یادآوری 1"}))
+    assert bot.get_user_state(123) == f"edit_reminder:{existing_id}"
+    asyncio.run(bot.process_message(object(), {**base, "text": "2999-05-05 10:30 new"}))
+    assert bot.list_reminders(123)[0][2] == "old"
+    asyncio.run(bot.process_message(object(), {**base, "text": "تأیید یادآوری"}))
+    assert bot.list_reminders(123)[0][2] == "new"
+    assert bot.get_reminder(123, existing_id)[1].startswith("2999-05-05T10:30")
 
 
 def test_reminder_delete_is_scoped_to_owning_user(tmp_path, monkeypatch):
@@ -319,3 +360,260 @@ def test_clear_history_button_requires_confirmation(tmp_path, monkeypatch):
     asyncio.run(bot.process_message(object(), {**base, "message_id": 2, "text": "تأیید پاک‌کردن"}))
     assert bot.load_history(123) == []
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+
+
+def test_personal_memory_is_explicit_and_user_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "memory.sqlite3")
+    bot.init_db()
+    memory_id = bot.add_memory(123, "ترجیح می‌دهم پاسخ‌ها کوتاه باشند")
+    assert bot.list_memories(123)[0] == (memory_id, "ترجیح می‌دهم پاسخ‌ها کوتاه باشند")
+    assert bot.list_memories(999) == []
+    assert bot.delete_memory(999, memory_id) is False
+    assert bot.delete_memory(123, memory_id) is True
+    assert bot.list_memories(123) == []
+
+
+def test_memory_menu_saves_only_after_explicit_button(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "memory-menu.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "حافظهٔ شخصی"}))
+    assert bot.list_memories(123) == []
+    asyncio.run(bot.process_message(object(), {**base, "text": "ثبت یادداشت"}))
+    assert bot.get_user_state(123) == "await_memory"
+    asyncio.run(bot.process_message(object(), {**base, "text": "پاسخ‌ها را کوتاه ترجیح می‌دهم"}))
+    assert bot.list_memories(123)[0][1] == "پاسخ‌ها را کوتاه ترجیح می‌دهم"
+    assert "ذخیره شد" in calls[-1][1]["text"]
+
+
+def test_memory_clear_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "memory-clear.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.add_memory(123, "keep until confirmed")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "حافظهٔ شخصی"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "پاک‌کردن همهٔ یادداشت‌ها"}))
+    assert bot.list_memories(123)
+    assert calls[-1][1]["reply_markup"] == bot.MEMORY_CONFIRM_MARKUP
+    asyncio.run(bot.process_message(object(), {**base, "text": "تأیید حذف یادداشت‌ها"}))
+    assert bot.list_memories(123) == []
+
+
+def test_user_settings_persist_across_reads(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "settings.sqlite3")
+    bot.init_db()
+    settings = bot.set_user_setting(123, "language", "en")
+    assert settings["language"] == "en"
+    assert bot.get_user_settings(123)["language"] == "en"
+    assert bot.get_user_settings(123)["history_enabled"] is True
+
+
+def test_history_disabled_does_not_store_chat_turns(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "history-off.sqlite3")
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "test")
+    bot.init_db()
+    bot.set_user_setting(123, "history_enabled", False)
+    bot.add_memory(123, "پاسخ‌ها را به فارسی بده")
+    captured = []
+
+    async def fake_apmix(client, messages, **kwargs):
+        captured.extend(messages)
+        return {"choices": [{"message": {"content": "جواب"}}]}
+
+    monkeypatch.setattr(bot, "apmix_chat", fake_apmix)
+    result = asyncio.run(bot.assistant_reply(object(), 123, "سلام"))
+    assert result == "جواب"
+    assert bot.load_history(123) == []
+    assert "پاسخ‌ها را به فارسی بده" in captured[0]["content"]
+
+
+def test_file_context_roundtrip_and_forget(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "files.sqlite3")
+    bot.init_db()
+    images = [b"page-1", b"page-2"]
+    stored = bot.encode_saved_images(images)
+    bot.save_user_file(123, "scan.pdf", "", stored)
+    record = bot.get_user_file(123)
+    assert record[0] == "scan.pdf"
+    assert bot.decode_saved_images(record[2]) == images
+    assert bot.clear_user_file(123) is True
+    assert bot.get_user_file(123) is None
+
+
+def test_follow_topics_are_user_scoped_and_removable(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "topics.sqlite3")
+    bot.init_db()
+    topic_id = bot.add_follow_topic(123, "خبرهای هوش مصنوعی")
+    assert bot.list_follow_topics(123) == [(topic_id, "خبرهای هوش مصنوعی")]
+    assert bot.list_follow_topics(999) == []
+    assert bot.delete_follow_topic(123, topic_id)
+    assert bot.list_follow_topics(123) == []
+
+
+def test_topic_menu_adds_followed_topic(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "topic-menu.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+
+    async def fake_telegram_call(client, method, payload):
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "خلاصه‌ها"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "موضوعات پیگیری"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "افزودن موضوع پیگیری"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "خبرهای انرژی پاک"}))
+    assert bot.list_follow_topics(123)[0][1] == "خبرهای انرژی پاک"
+
+
+def test_summary_menu_toggles_and_sets_local_hour(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "summary-settings.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+
+    async def fake_telegram_call(client, method, payload):
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "خلاصه‌ها"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "خلاصهٔ روزانه"}))
+    assert bot.get_user_settings(123)["daily_summary"] is True
+    asyncio.run(bot.process_message(object(), {**base, "text": "ساعت خلاصه"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "10"}))
+    assert bot.get_user_settings(123)["summary_hour"] == 10
+
+
+def test_document_followup_uses_explicitly_saved_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "document-chat.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.save_user_file(123, "notes.txt", "Stored project deadline: Friday.")
+    bot.set_user_state(123, "document_chat")
+    captured = []
+    calls = []
+
+    async def fake_assistant(client, user_id, content, **kwargs):
+        captured.append(content)
+        return "The deadline is Friday."
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "assistant_reply", fake_assistant)
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    message = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "When is the deadline?"}
+    asyncio.run(bot.process_message(object(), message))
+    assert "Stored project deadline: Friday." in captured[0]
+    assert calls[-1][1]["reply_markup"] == bot.DOCUMENT_MARKUP
+
+
+def test_reminder_list_button_snooze_labels_include_id():
+    markup = bot.reminder_notification_markup(42)
+    labels = [button["text"] for row in markup["keyboard"] for button in row]
+    assert "تعویق ۱۰ دقیقه (42)" in labels
+    assert "تعویق ۱ ساعت (42)" in labels
+
+
+def test_snooze_button_creates_new_reminder(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "snooze-button.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    reminder_id = bot.add_reminder(123, datetime.now(bot.TZ) - timedelta(minutes=1), "call")
+    bot.mark_reminder_sent(reminder_id)
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    message = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": f"تعویق ۱۰ دقیقه ({reminder_id})"}
+    asyncio.run(bot.process_message(object(), message))
+    assert len(bot.list_reminders(123)) == 1
+    assert bot.list_reminders(123)[0][2] == "call"
+    assert "10 دقیقه" in calls[-1][1]["text"]
+
+
+def test_scanned_pdf_pages_render_for_ocr(tmp_path):
+    import fitz
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((50, 50), "scan test")
+    raw = document.tobytes()
+    rendered = bot.render_pdf_pages(raw)
+    assert len(rendered) == 1
+    assert rendered[0].startswith(b"\x89PNG")
+
+
+def test_summary_includes_saved_topics_and_sends_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "summary.sqlite3")
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "test")
+    monkeypatch.setattr(bot, "TAVILY_API_KEY", "")
+    bot.init_db()
+    due = datetime.now(bot.TZ) + timedelta(hours=3)
+    bot.add_reminder(123, due, "گرفتن دارو")
+    bot.add_follow_topic(123, "هوش مصنوعی")
+    apmix_calls = []
+    telegram_calls = []
+
+    async def fake_apmix(client, messages, **kwargs):
+        apmix_calls.extend(messages)
+        return {"choices": [{"message": {"content": "خلاصه آماده"}}]}
+
+    async def fake_telegram_call(client, method, payload):
+        telegram_calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "apmix_chat", fake_apmix)
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    asyncio.run(bot.send_personal_summary(object(), 123, weekly=False))
+    assert "گرفتن دارو" in apmix_calls[-1]["content"]
+    assert "هوش مصنوعی" in apmix_calls[-1]["content"]
+    assert telegram_calls[-1][1]["text"] == "خلاصه آماده"
+
+
+def test_export_reminders_sends_csv_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "export.sqlite3")
+    bot.init_db()
+    bot.add_reminder(123, datetime(2999, 5, 4, 9, 25, tzinfo=bot.TZ), "task", "weekly")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(bot, "TG_API", "https://api.telegram.org/botTOKEN")
+    asyncio.run(bot.send_reminder_export(FakeClient(), 123, 123))
+    assert captured["url"].endswith("/sendDocument")
+    assert captured["files"]["document"][0] == "reminders.csv"
+    assert b"weekly" not in captured["files"]["document"][1]
+    assert b"task" in captured["files"]["document"][1]
