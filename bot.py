@@ -51,31 +51,51 @@ SYSTEM_PROMPT = (
 )
 
 MAIN_MENU_MARKUP = {
-    "inline_keyboard": [
+    "keyboard": [
         [
-            {"text": "گفت‌وگو", "callback_data": "menu:chat"},
-            {"text": "جست‌وجوی وب", "callback_data": "menu:search"},
+            {"text": "گفت‌وگو"},
+            {"text": "جست‌وجوی وب"},
         ],
         [
-            {"text": "ثبت یادآوری", "callback_data": "menu:remind"},
-            {"text": "یادآوری‌های من", "callback_data": "menu:reminders"},
+            {"text": "ثبت یادآوری"},
+            {"text": "یادآوری‌های من"},
         ],
         [
-            {"text": "بررسی عکس/سند", "callback_data": "menu:file"},
-            {"text": "پاک‌کردن حافظه", "callback_data": "menu:clear"},
+            {"text": "بررسی عکس/سند"},
+            {"text": "پاک‌کردن حافظه"},
         ],
-        [{"text": "راهنما", "callback_data": "menu:help"}],
-    ]
+        [{"text": "راهنما"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": True,
+    "input_field_placeholder": "یکی از گزینه‌ها را انتخاب کن یا پیام بفرست",
 }
 
 CLEAR_CONFIRM_MARKUP = {
-    "inline_keyboard": [
+    "keyboard": [
         [
-            {"text": "بله، حافظه را پاک کن", "callback_data": "confirm:clear"},
-            {"text": "لغو", "callback_data": "cancel:clear"},
+            {"text": "تأیید پاک‌کردن"},
+            {"text": "لغو"},
         ],
-        [{"text": "بازگشت به منو", "callback_data": "menu:home"}],
-    ]
+        [{"text": "بازگشت به منو"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "تأیید یا لغو را انتخاب کن",
+}
+
+MENU_BUTTON_ACTIONS = {
+    "گفت‌وگو": "chat",
+    "جست‌وجوی وب": "search",
+    "ثبت یادآوری": "remind",
+    "یادآوری‌های من": "reminders",
+    "بررسی عکس/سند": "file",
+    "پاک‌کردن حافظه": "clear",
+    "راهنما": "help",
+    "تأیید پاک‌کردن": "confirm_clear",
+    "لغو": "cancel_clear",
+    "بازگشت به منو": "home",
 }
 
 HELP_TEXT = (
@@ -371,6 +391,74 @@ def extract_document(data: bytes, filename: str) -> str:
     raise ValueError("این قالب پشتیبانی نمی‌شود. PDF، DOCX، TXT، MD، CSV، JSON یا فایل متنی بفرست.")
 
 
+async def handle_menu_action(
+    client: httpx.AsyncClient,
+    user_id: int,
+    chat_id: int,
+    action: str,
+    reply_to: int | None = None,
+) -> None:
+    if action == "chat":
+        set_user_state(user_id, "chat")
+        await send_text(client, chat_id, "حالت گفت‌وگو آماده است؛ پیام یا پرسشت را بفرست.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "search":
+        set_user_state(user_id, "await_search")
+        await send_text(client, chat_id, "چه چیزی را در وب جست‌وجو کنم؟ پرسش یا عبارتت را در پیام بعدی بفرست.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "remind":
+        set_user_state(user_id, "await_reminder")
+        await send_text(
+            client,
+            chat_id,
+            "زمان و متن یادآوری را در پیام بعدی بفرست؛ دستور خاصی لازم نیست.\n"
+            "نمونه: 30m تماس با علی\nنمونهٔ دقیق: 2026-10-11 14:30 تماس با علی",
+            reply_to,
+            MAIN_MENU_MARKUP,
+        )
+    elif action == "file":
+        set_user_state(user_id, "await_file")
+        await send_text(client, chat_id, "عکس یا سندت را در پیام بعدی بفرست تا بررسی‌اش کنم.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "reminders":
+        reminders = list_reminders(user_id)
+        if not reminders:
+            set_user_state(user_id, None)
+            await send_text(client, chat_id, "یادآوریِ در انتظاری نداری.", reply_to, MAIN_MENU_MARKUP)
+            return
+        ids = []
+        lines = []
+        keyboard_rows = []
+        for index, (reminder_id, due_at, text) in enumerate(reminders, 1):
+            ids.append(str(reminder_id))
+            due = datetime.fromisoformat(due_at).astimezone(TZ)
+            lines.append(f"{index}. {due.strftime('%Y-%m-%d %H:%M')} — {text}")
+            keyboard_rows.append([{"text": f"حذف یادآوری {index}"}])
+        keyboard_rows.append([{"text": "بازگشت به منو"}])
+        set_user_state(user_id, "reminders:" + ",".join(ids))
+        reminders_markup = {
+            "keyboard": keyboard_rows,
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "is_persistent": True,
+            "input_field_placeholder": "برای حذف، یکی را انتخاب کن",
+        }
+        await send_text(client, chat_id, "یادآوری‌های در انتظار:\n" + "\n".join(lines), reply_to, reminders_markup)
+    elif action == "clear":
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, "حافظهٔ گفت‌وگو پاک شود؟ این کار سابقه را حذف می‌کند.", reply_to, CLEAR_CONFIRM_MARKUP)
+    elif action == "confirm_clear":
+        clear_history(user_id)
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, "حافظهٔ گفت‌وگو پاک شد.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "cancel_clear":
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, "پاک‌کردن حافظه لغو شد.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "help":
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, HELP_TEXT, reply_to, MAIN_MENU_MARKUP)
+    elif action == "home":
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, "منوی اصلی:", reply_to, MAIN_MENU_MARKUP)
+
+
 async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) -> None:
     sender = message.get("from", {})
     user_id = sender.get("id")
@@ -388,6 +476,27 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     text = message.get("text", "") or message.get("caption", "") or ""
     normalized = convert_persian_digits(text).strip()
     reply_to = message.get("message_id")
+    menu_action = MENU_BUTTON_ACTIONS.get(normalized)
+    if menu_action:
+        await handle_menu_action(client, user_id, chat_id, menu_action, reply_to)
+        return
+
+    pending_menu_state = get_user_state(user_id)
+    if pending_menu_state and pending_menu_state.startswith("reminders:"):
+        if normalized.startswith("حذف یادآوری "):
+            try:
+                choice = int(normalized.removeprefix("حذف یادآوری ").strip())
+                reminder_ids = [int(value) for value in pending_menu_state.split(":", 1)[1].split(",") if value]
+            except ValueError:
+                choice, reminder_ids = 0, []
+            set_user_state(user_id, None)
+            if 1 <= choice <= len(reminder_ids) and delete_reminder(user_id, reminder_ids[choice - 1]):
+                await send_text(client, chat_id, "یادآوری حذف شد.", reply_to, MAIN_MENU_MARKUP)
+            else:
+                await send_text(client, chat_id, "یادآوری پیدا نشد یا قبلاً ارسال شده است.", reply_to, MAIN_MENU_MARKUP)
+            return
+        set_user_state(user_id, None)
+
     if normalized.startswith("/start") or normalized.startswith("/help"):
         set_user_state(user_id, None)
         await send_text(client, chat_id, HELP_TEXT, reply_to, reply_markup=MAIN_MENU_MARKUP)
@@ -515,55 +624,20 @@ async def process_callback_query(client: httpx.AsyncClient, callback: dict[str, 
     # Answer promptly so Telegram stops showing the button's loading indicator.
     await telegram_call(client, "answerCallbackQuery", {"callback_query_id": callback_id})
     data = callback.get("data", "")
-    if data == "menu:home":
-        set_user_state(user_id, None)
-        await send_text(client, chat_id, "منوی اصلی:", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "menu:chat":
-        set_user_state(user_id, "chat")
-        await send_text(client, chat_id, "حالت گفت‌وگو آماده است؛ پیام یا پرسشت را بفرست.", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "menu:search":
-        set_user_state(user_id, "await_search")
-        await send_text(client, chat_id, "چه چیزی را در وب جست‌وجو کنم؟ پرسش یا عبارتت را در پیام بعدی بفرست.", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "menu:remind":
-        set_user_state(user_id, "await_reminder")
-        await send_text(
-            client,
-            chat_id,
-            "زمان و متن یادآوری را در پیام بعدی بفرست؛ دستور خاصی لازم نیست.\n"
-            "نمونه: 30m تماس با علی\nنمونهٔ دقیق: 2026-10-11 14:30 تماس با علی",
-            reply_markup=MAIN_MENU_MARKUP,
-        )
-    elif data == "menu:file":
-        set_user_state(user_id, "await_file")
-        await send_text(client, chat_id, "عکس یا سندت را در پیام بعدی بفرست تا بررسی‌اش کنم.", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "menu:reminders":
-        set_user_state(user_id, None)
-        reminders = list_reminders(user_id)
-        if not reminders:
-            await send_text(client, chat_id, "یادآوریِ در انتظاری نداری.", reply_markup=MAIN_MENU_MARKUP)
-            return
-        lines = []
-        keyboard_rows = []
-        for index, (reminder_id, due_at, text) in enumerate(reminders, 1):
-            due = datetime.fromisoformat(due_at).astimezone(TZ)
-            lines.append(f"{index}. {due.strftime('%Y-%m-%d %H:%M')} — {text}")
-            keyboard_rows.append([{"text": f"حذف یادآوری {index}", "callback_data": f"reminder:delete:{reminder_id}"}])
-        keyboard_rows.append([{"text": "بازگشت به منو", "callback_data": "menu:home"}])
-        await send_text(
-            client,
-            chat_id,
-            "یادآوری‌های در انتظار:\n" + "\n".join(lines),
-            reply_markup={"inline_keyboard": keyboard_rows},
-        )
-    elif data == "menu:clear":
-        set_user_state(user_id, None)
-        await send_text(client, chat_id, "حافظهٔ گفت‌وگو پاک شود؟ این کار سابقه را حذف می‌کند.", reply_markup=CLEAR_CONFIRM_MARKUP)
-    elif data == "confirm:clear":
-        clear_history(user_id)
-        set_user_state(user_id, None)
-        await send_text(client, chat_id, "حافظهٔ گفت‌وگو پاک شد.", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "cancel:clear":
-        await send_text(client, chat_id, "پاک‌کردن حافظه لغو شد.", reply_markup=MAIN_MENU_MARKUP)
+    legacy_actions = {
+        "menu:home": "home",
+        "menu:chat": "chat",
+        "menu:search": "search",
+        "menu:remind": "remind",
+        "menu:file": "file",
+        "menu:reminders": "reminders",
+        "menu:clear": "clear",
+        "menu:help": "help",
+        "confirm:clear": "confirm_clear",
+        "cancel:clear": "cancel_clear",
+    }
+    if data in legacy_actions:
+        await handle_menu_action(client, user_id, chat_id, legacy_actions[data])
     elif data.startswith("reminder:delete:"):
         try:
             reminder_id = int(data.rsplit(":", 1)[1])
@@ -574,8 +648,6 @@ async def process_callback_query(client: httpx.AsyncClient, callback: dict[str, 
             await send_text(client, chat_id, "یادآوری حذف شد.", reply_markup=MAIN_MENU_MARKUP)
         else:
             await send_text(client, chat_id, "یادآوری پیدا نشد یا قبلاً ارسال شده است.", reply_markup=MAIN_MENU_MARKUP)
-    elif data == "menu:help":
-        await send_text(client, chat_id, HELP_TEXT, reply_markup=MAIN_MENU_MARKUP)
     else:
         await send_text(client, chat_id, "این دکمه شناخته نشد؛ از منوی اصلی یکی از گزینه‌ها را انتخاب کن.", reply_markup=MAIN_MENU_MARKUP)
 

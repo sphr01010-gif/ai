@@ -135,7 +135,7 @@ def test_voice_input_is_not_sent_to_another_ai_provider(tmp_path, monkeypatch):
     assert any(method == "sendMessage" and "ورودی صوتی" in payload["text"] for method, payload in calls)
 
 
-def test_start_message_includes_inline_menu(tmp_path, monkeypatch):
+def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "start-menu.sqlite3")
     bot.init_db()
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
@@ -157,12 +157,14 @@ def test_start_message_includes_inline_menu(tmp_path, monkeypatch):
     method, payload = calls[0]
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
-    callback_data = {
-        button["callback_data"]
-        for row in payload["reply_markup"]["inline_keyboard"]
+    button_labels = {
+        button["text"]
+        for row in payload["reply_markup"]["keyboard"]
         for button in row
     }
-    assert callback_data == {"menu:chat", "menu:search", "menu:remind", "menu:reminders", "menu:file", "menu:clear", "menu:help"}
+    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "ثبت یادآوری", "یادآوری‌های من", "بررسی عکس/سند", "پاک‌کردن حافظه", "راهنما"}
+    assert payload["reply_markup"]["is_persistent"] is True
+    assert payload["reply_markup"]["resize_keyboard"] is True
 
 
 def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
@@ -218,7 +220,6 @@ def test_search_button_routes_next_plain_text_to_web_search(tmp_path, monkeypatc
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "search-flow.sqlite3")
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     bot.init_db()
-    bot.set_user_state(123, "await_search")
     queries = []
     calls = []
 
@@ -232,6 +233,15 @@ def test_search_button_routes_next_plain_text_to_web_search(tmp_path, monkeypatc
 
     monkeypatch.setattr(bot, "explicit_search_reply", fake_search)
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    menu_message = {
+        "from": {"id": 123},
+        "chat": {"id": 123, "type": "private"},
+        "message_id": 10,
+        "text": "جست‌وجوی وب",
+    }
+    asyncio.run(bot.process_message(object(), menu_message))
+    assert bot.get_user_state(123) == "await_search"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
     message = {
         "from": {"id": 123},
         "chat": {"id": 123, "type": "private"},
@@ -250,7 +260,6 @@ def test_reminder_button_accepts_plain_text_and_stores_it(tmp_path, monkeypatch)
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-flow.sqlite3")
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     bot.init_db()
-    bot.set_user_state(123, "await_reminder")
     calls = []
 
     async def fake_telegram_call(client, method, payload):
@@ -258,6 +267,14 @@ def test_reminder_button_accepts_plain_text_and_stores_it(tmp_path, monkeypatch)
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    menu_message = {
+        "from": {"id": 123},
+        "chat": {"id": 123, "type": "private"},
+        "message_id": 11,
+        "text": "ثبت یادآوری",
+    }
+    asyncio.run(bot.process_message(object(), menu_message))
+    assert bot.get_user_state(123) == "await_reminder"
     message = {
         "from": {"id": 123},
         "chat": {"id": 123, "type": "private"},
@@ -295,10 +312,10 @@ def test_clear_history_button_requires_confirmation(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
-    base = {"id": "callback-clear", "from": {"id": 123}, "message": {"chat": {"id": 123, "type": "private"}}}
-    asyncio.run(bot.process_callback_query(object(), {**base, "data": "menu:clear"}))
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 1, "text": "پاک‌کردن حافظه"}))
     assert bot.load_history(123)[0]["content"] == "keep until confirmed"
     assert calls[-1][1]["reply_markup"] == bot.CLEAR_CONFIRM_MARKUP
-    asyncio.run(bot.process_callback_query(object(), {**base, "id": "callback-confirm", "data": "confirm:clear"}))
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 2, "text": "تأیید پاک‌کردن"}))
     assert bot.load_history(123) == []
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
