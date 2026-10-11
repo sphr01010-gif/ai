@@ -10,7 +10,7 @@ def test_persian_digit_normalization():
 
 
 def test_relative_reminder_parsing():
-    parsed = bot.parse_reminder_command("/remind 30m تست یادآوری")
+    parsed = bot.parse_reminder_command("30m تست یادآوری")
     assert parsed is not None
     due, text = parsed
     assert text == "تست یادآوری"
@@ -19,7 +19,7 @@ def test_relative_reminder_parsing():
 
 
 def test_absolute_reminder_parsing_uses_tehran_timezone():
-    parsed = bot.parse_reminder_command("/remind 2999-05-04 09:25 آزمایش")
+    parsed = bot.parse_reminder_command("2999-05-04 09:25 آزمایش")
     assert parsed is not None
     due, text = parsed
     assert text == "آزمایش"
@@ -111,7 +111,9 @@ def test_web_search_trigger_detection():
     assert not bot.should_search_web("سلام، حالت چطوره؟")
 
 
-def test_voice_input_is_not_sent_to_another_ai_provider(monkeypatch):
+def test_voice_input_is_not_sent_to_another_ai_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "voice.sqlite3")
+    bot.init_db()
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     calls = []
 
@@ -133,7 +135,9 @@ def test_voice_input_is_not_sent_to_another_ai_provider(monkeypatch):
     assert any(method == "sendMessage" and "ورودی صوتی" in payload["text"] for method, payload in calls)
 
 
-def test_start_message_includes_inline_menu(monkeypatch):
+def test_start_message_includes_inline_menu(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "start-menu.sqlite3")
+    bot.init_db()
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     calls = []
 
@@ -158,7 +162,7 @@ def test_start_message_includes_inline_menu(monkeypatch):
         for row in payload["reply_markup"]["inline_keyboard"]
         for button in row
     }
-    assert callback_data == {"menu:search", "menu:remind", "menu:help"}
+    assert callback_data == {"menu:chat", "menu:search", "menu:remind", "menu:reminders", "menu:file", "menu:clear", "menu:help"}
 
 
 def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
@@ -184,7 +188,9 @@ def test_unauthorized_callback_is_answered_but_not_processed(monkeypatch):
     assert "خصوصی" in payload["text"]
 
 
-def test_reminder_callback_returns_instructions_and_menu(monkeypatch):
+def test_reminder_callback_returns_instructions_and_menu(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-callback.sqlite3")
+    bot.init_db()
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     calls = []
 
@@ -202,5 +208,97 @@ def test_reminder_callback_returns_instructions_and_menu(monkeypatch):
     asyncio.run(bot.process_callback_query(object(), callback))
     assert [method for method, _ in calls] == ["answerCallbackQuery", "sendMessage"]
     payload = calls[1][1]
-    assert "/remind 30m" in payload["text"]
+    assert "30m تماس با علی" in payload["text"]
+    assert "/remind" not in payload["text"]
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
+    assert bot.get_user_state(123) == "await_reminder"
+
+
+def test_search_button_routes_next_plain_text_to_web_search(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "search-flow.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.set_user_state(123, "await_search")
+    queries = []
+    calls = []
+
+    async def fake_search(client, query):
+        queries.append(query)
+        return "search result"
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "explicit_search_reply", fake_search)
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    message = {
+        "from": {"id": 123},
+        "chat": {"id": 123, "type": "private"},
+        "message_id": 11,
+        "text": "latest space news",
+    }
+    asyncio.run(bot.process_message(object(), message))
+    assert queries == ["latest space news"]
+    assert calls[-1][0] == "sendMessage"
+    assert calls[-1][1]["text"] == "search result"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+    assert bot.get_user_state(123) is None
+
+
+def test_reminder_button_accepts_plain_text_and_stores_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-flow.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.set_user_state(123, "await_reminder")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    message = {
+        "from": {"id": 123},
+        "chat": {"id": 123, "type": "private"},
+        "message_id": 12,
+        "text": "30m تماس با علی",
+    }
+    asyncio.run(bot.process_message(object(), message))
+    reminders = bot.list_reminders(123)
+    assert len(reminders) == 1
+    assert reminders[0][2] == "تماس با علی"
+    assert "/remind" not in calls[-1][1]["text"]
+    assert bot.get_user_state(123) is None
+
+
+def test_reminder_delete_is_scoped_to_owning_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "reminder-delete.sqlite3")
+    bot.init_db()
+    bot.add_reminder(123, datetime(2999, 5, 4, 9, 25, tzinfo=bot.TZ), "owned")
+    reminder_id = bot.list_reminders(123)[0][0]
+    assert bot.delete_reminder(999, reminder_id) is False
+    assert len(bot.list_reminders(123)) == 1
+    assert bot.delete_reminder(123, reminder_id) is True
+    assert bot.list_reminders(123) == []
+
+
+def test_clear_history_button_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "clear-confirm.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.save_history(123, [{"role": "user", "content": "keep until confirmed"}])
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"id": "callback-clear", "from": {"id": 123}, "message": {"chat": {"id": 123, "type": "private"}}}
+    asyncio.run(bot.process_callback_query(object(), {**base, "data": "menu:clear"}))
+    assert bot.load_history(123)[0]["content"] == "keep until confirmed"
+    assert calls[-1][1]["reply_markup"] == bot.CLEAR_CONFIRM_MARKUP
+    asyncio.run(bot.process_callback_query(object(), {**base, "id": "callback-confirm", "data": "confirm:clear"}))
+    assert bot.load_history(123) == []
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
