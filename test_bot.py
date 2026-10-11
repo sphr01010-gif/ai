@@ -617,3 +617,53 @@ def test_export_reminders_sends_csv_document(tmp_path, monkeypatch):
     assert captured["files"]["document"][0] == "reminders.csv"
     assert b"weekly" not in captured["files"]["document"][1]
     assert b"task" in captured["files"]["document"][1]
+
+
+def test_tooken_chat_uses_configured_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "hello from Tooken"}}]}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return FakeResponse()
+
+    client = FakeClient()
+    result = asyncio.run(bot.tooken_chat(client, [{"role": "user", "content": "hi"}]))
+    assert result["choices"][0]["message"]["content"] == "hello from Tooken"
+    url, kwargs = client.call
+    assert url == "https://api.example.test/v1/chat/completions"
+    assert kwargs["headers"]["Authorization"] == "Bearer tooken-test-key"
+    assert kwargs["json"]["model"] == "test-model"
+
+
+def test_model_chat_falls_back_from_apmix_to_tooken(monkeypatch):
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "tooken"])
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    calls = []
+
+    async def fail_apmix(*args, **kwargs):
+        calls.append("apmix")
+        raise RuntimeError("temporary provider failure")
+
+    async def succeed_tooken(*args, **kwargs):
+        calls.append("tooken")
+        return {"choices": [{"message": {"content": "fallback worked"}}]}
+
+    monkeypatch.setattr(bot, "apmix_chat", fail_apmix)
+    monkeypatch.setattr(bot, "tooken_chat", succeed_tooken)
+    result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}]))
+    assert result["choices"][0]["message"]["content"] == "fallback worked"
+    assert calls == ["apmix", "tooken"]
