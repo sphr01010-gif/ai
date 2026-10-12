@@ -581,3 +581,25 @@ def test_explicit_provider_selection_does_not_fallback(monkeypatch):
     result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="tooken"))
     assert result["choices"][0]["message"]["content"] == "selected Tooken"
     assert calls == ["tooken"]
+
+
+def test_provider_errors_show_actionable_details_without_leaking_keys(monkeypatch):
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["tooken"])
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "")
+    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "super-secret-tooken-key")
+    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+
+    async def fail_tooken(*args, **kwargs):
+        raise RuntimeError("Tooken API HTTP 401: invalid key super-secret-tooken-key")
+
+    monkeypatch.setattr(bot, "tooken_chat", fail_tooken)
+    try:
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="tooken"))
+    except RuntimeError as exc:
+        assert "HTTP 401" in str(exc)
+        assert "invalid key" in str(exc)
+        assert "super-secret-tooken-key" not in str(exc)
+        assert "[REDACTED]" in str(exc)
+    else:
+        raise AssertionError("provider failure should be surfaced")
