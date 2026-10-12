@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import time
@@ -73,6 +74,20 @@ AI_PROVIDER_MARKUP = {
     "one_time_keyboard": True,
     "input_field_placeholder": "ارائه‌دهندهٔ چت را انتخاب کن",
 }
+
+
+def ai_provider_markup(user_id: int) -> dict[str, Any]:
+    enabled = bool(get_user_settings(user_id).get("fallback_on_error", False))
+    return {
+        "keyboard": [
+            [{"text": "APMIX"}, {"text": "Gemini"}],
+            [{"text": "خودکار"}, {"text": "بازگشت"}],
+            [{"text": "جایگزینی هنگام خطا: " + ("روشن" if enabled else "خاموش")}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+        "input_field_placeholder": "ارائه‌دهنده و حالت جایگزینی را انتخاب کن",
+    }
 
 CLEAR_CONFIRM_MARKUP = {
     "keyboard": [
@@ -172,6 +187,8 @@ MENU_BUTTON_ACTIONS = {
     "APMIX": "select_provider_apmix",
     "Gemini": "select_provider_gemini",
     "خودکار": "select_provider_auto",
+    "جایگزینی هنگام خطا: روشن": "toggle_provider_fallback",
+    "جایگزینی هنگام خطا: خاموش": "toggle_provider_fallback",
     "بازگشت": "home",
 }
 
@@ -272,6 +289,7 @@ DEFAULT_USER_SETTINGS = {
     "history_enabled": True,
     "personal_memory_enabled": True,
     "ai_provider": "auto",
+    "fallback_on_error": False,
     "daily_summary": False,
     "weekly_summary": False,
     "summary_hour": 9,
@@ -291,6 +309,7 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
             pass
     if settings.get("ai_provider") not in {"auto", "apmix", "gemini"}:
         settings["ai_provider"] = "auto"
+    settings["fallback_on_error"] = bool(settings.get("fallback_on_error", False))
     return settings
 
 
@@ -643,11 +662,25 @@ async def gemini_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]],
 
     if not contents:
         raise ValueError("Gemini request contains no user content")
-    payload: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1300}}
+    payload: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": 1.0, "maxOutputTokens": 1300}}
     if system_parts:
         payload["system_instruction"] = {"parts": system_parts}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent"
-    response = await client.post(url, headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}, json=payload, timeout=100)
+    response = None
+    for attempt in range(3):
+        response = await client.post(url, headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}, json=payload, timeout=100)
+        status = response.status_code
+        if status < 400 or status not in {408, 429} and status < 500:
+            break
+        if attempt == 2:
+            break
+        retry_after = response.headers.get("Retry-After", "") if hasattr(response, "headers") else ""
+        try:
+            delay = min(max(float(retry_after), 0.5), 4.0) if retry_after else 2 ** attempt
+        except ValueError:
+            delay = 2 ** attempt
+        await asyncio.sleep(delay + random.uniform(0.05, 0.25))
+    assert response is not None
     if response.status_code >= 400:
         detail = safe_provider_error(RuntimeError(response.text))
         raise RuntimeError(f"Gemini API HTTP {response.status_code}: {detail}")
@@ -657,6 +690,114 @@ async def gemini_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]],
     if not answer:
         raise RuntimeError("Gemini returned no text candidate")
     return {"choices": [{"message": {"content": answer}}]}
+
+
+API_TOOL_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def register_api_tool(name: str, matcher: re.Pattern[str], handler: Any) -> None:
+    """Register an intent matcher and async handler for an external data API."""
+    API_TOOL_REGISTRY[name] = {"matcher": matcher, "handler": handler}
+
+
+CURRENCY_NAMES = {
+    "usd": ("USD", "دلار آمریکا"), "دollar": ("USD", "دلار آمریکا"), "دلار": ("USD", "دلار آمریکا"),
+    "eur": ("EUR", "یورو"), "یورو": ("EUR", "یورو"),
+    "gbp": ("GBP", "پوند بریتانیا"), "پوند": ("GBP", "پوند بریتانیا"),
+    "jpy": ("JPY", "ین ژاپن"), "ین": ("JPY", "ین ژاپن"),
+    "cad": ("CAD", "دلار کانادا"), "aud": ("AUD", "دلار استرالیا"),
+    "chf": ("CHF", "فرانک سوئیس"), "try": ("TRY", "لیر ترکیه"), "لیر": ("TRY", "لیر ترکیه"),
+    "aed": ("AED", "درهم امارات"), "درهم": ("AED", "درهم امارات"),
+    "sar": ("SAR", "ریال سعودی"), "cny": ("CNY", "یوان چین"), "یوان": ("CNY", "یوان چین"),
+}
+
+
+def _find_currency_codes(text: str) -> list[tuple[int, int, str, str]]:
+    found = []
+    for alias, (code, label) in sorted(CURRENCY_NAMES.items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = re.compile(rf"(?<![A-Za-z؀-ۿ]){re.escape(alias)}(?![A-Za-z؀-ۿ])", re.I)
+        for match in pattern.finditer(text):
+            if not any(match.start() < end and match.end() > start for start, end, _, _ in found):
+                found.append((match.start(), match.end(), code, label))
+    return sorted(found)
+
+
+async def weather_tool(client: httpx.AsyncClient, query: str, match: re.Match[str]) -> str:
+    place = re.sub(r"[؟?!.,؛:]+$", "", match.group(1)).strip()
+    place = re.sub(r"^(?:در|شهر)\s+", "", place, flags=re.I)
+    place = re.sub(r"\s*(?:چطوره|چگونه است|چه وضعیه|چه وضعی دارد)[؟?!]*$", "", place, flags=re.I).strip()
+    place = re.sub(r"\s+(?:امروز|الان|فعلاً|فردا|پس‌فردا|پس فردا|هفته(?:ی)? آینده|today|tomorrow)$", "", place, flags=re.I).strip()
+    if not place or len(place) < 2:
+        return "برای بررسی آب‌وهوا، نام شهر را هم بنویس؛ مثلاً «هوای شیراز چطوره؟»."
+    geo = await client.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": place, "count": 1, "language": "fa", "format": "json"}, timeout=20)
+    geo.raise_for_status()
+    places = geo.json().get("results", [])
+    if not places:
+        return f"برای «{place}» شهری پیدا نکردم؛ نام شهر و کشور را دقیق‌تر بفرست."
+    loc = places[0]
+    forecast = await client.get("https://api.open-meteo.com/v1/forecast", params={
+        "latitude": loc["latitude"], "longitude": loc["longitude"], "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m", "daily": "weather_code,temperature_2m_max,temperature_2m_min", "forecast_days": 3, "timezone": "auto", "temperature_unit": "celsius", "wind_speed_unit": "kmh"
+    }, timeout=25)
+    forecast.raise_for_status()
+    data = forecast.json(); current = data.get("current", {}); daily = data.get("daily", {})
+    code = current.get("weather_code")
+    conditions = {0:"صاف",1:"عمدتاً صاف",2:"نیمه‌ابری",3:"ابری",45:"مه‌آلود",48:"مه یخ‌زن",51:"نم‌نم باران",53:"باران سبک",55:"باران",61:"باران سبک",63:"باران",65:"باران شدید",71:"برف سبک",73:"برف",75:"برف شدید",80:"رگبار پراکنده",81:"رگبار",82:"رگبار شدید",95:"رعدوبرق",96:"رعدوبرق و تگرگ",99:"رعدوبرق و تگرگ شدید"}.get(code, "وضعیت متغیر")
+    tz = data.get("timezone", "زمان محلی")
+    name = ", ".join(x for x in (loc.get("name"), loc.get("admin1"), loc.get("country")) if x)
+    lines = [f"آب‌وهوا برای {name}", f"دادهٔ فعلی ({current.get('time', 'زمان نامشخص')}، {tz}): {conditions}؛ دما {current.get('temperature_2m', '—')}°C، دمای محسوس {current.get('apparent_temperature', '—')}°C، رطوبت {current.get('relative_humidity_2m', '—')}٪، بارش {current.get('precipitation', '—')} mm، باد {current.get('wind_speed_10m', '—')} km/h.", "پیش‌بینی سه‌روزه (مدل هواشناسی):"]
+    for i, day in enumerate(daily.get("time", [])[:3]):
+        dcode = (daily.get("weather_code") or [None]*3)[i]
+        desc = conditions if dcode == code else {0:"صاف",1:"عمدتاً صاف",2:"نیمه‌ابری",3:"ابری",45:"مه‌آلود",51:"باران سبک",61:"باران سبک",63:"باران",65:"باران شدید",71:"برف سبک",73:"برف",75:"برف شدید",80:"رگبار",95:"رعدوبرق"}.get(dcode,"وضعیت متغیر")
+        lines.append(f"{day}: {desc}، کمینه {daily['temperature_2m_min'][i]}°C، بیشینه {daily['temperature_2m_max'][i]}°C")
+    lines += ["منبع: Open-Meteo Weather Forecast API — https://open-meteo.com/en/docs", "زمان‌های پیش‌بینی بر اساس منطقهٔ زمانی محلی مکان هستند؛ این‌ها دادهٔ مدل پیش‌بینی‌اند، نه تضمین وضعیت قطعی."]
+    return "\n".join(lines)
+
+
+async def currency_tool(client: httpx.AsyncClient, query: str, match: re.Match[str]) -> str:
+    normalized = convert_persian_digits(query)
+    found = _find_currency_codes(normalized)
+    if len(found) < 2:
+        return "برای تبدیل ارز، مبدأ و مقصد را بنویس؛ نمونه: «۱۰۰ دلار به یورو چند می‌شود؟»."
+    base, quote = found[0][2], found[1][2]
+    amount_match = re.search(r"(?<![A-Za-z])([0-9]+(?:[.,][0-9]+)?)", normalized)
+    amount = float(amount_match.group(1).replace(",", ".")) if amount_match else 1.0
+    if amount < 0 or amount > 1_000_000_000_000:
+        return "مقدار تبدیل معتبر نیست."
+    response = await client.get(f"https://api.frankfurter.dev/v2/rate/{base.lower()}/{quote.lower()}", timeout=20)
+    response.raise_for_status()
+    data = response.json(); rate = float(data["rate"]); converted = amount * rate
+    amount_str = f"{amount:,.4f}".rstrip("0").rstrip(".")
+    result_str = f"{converted:,.4f}".rstrip("0").rstrip(".")
+    return (f"دادهٔ نرخ مرجع در تاریخ {data.get('date', 'نامشخص')}: 1 {base} = {rate:.6g} {quote}.\n"
+            f"بر اساس این نرخ: {amount_str} {base} ≈ {result_str} {quote}.\n"
+            "این نرخ روزانه/مرجع است و نرخ لحظه‌ای خریدوفروش یا نرخ تضمین‌شدهٔ بازار ایران نیست.\n"
+            "منبع: Frankfurter API v2 — https://frankfurter.dev/")
+
+
+register_api_tool("weather", re.compile(r"(?:آب\s*و\s*هوای?|وضعیت\s+هوا(?:ی)?|هوای?|weather\s+(?:in\s+)?)\s*(?:شهر\s+)?(.+)$", re.I), weather_tool)
+register_api_tool("currency", re.compile(r"(?:نرخ|قیمت|ارزش|تبدیل|exchange|convert|USD|EUR|GBP|JPY|CAD|AUD|CHF|TRY|AED|SAR|CNY|دلار|یورو|پوند|ین|لیر|درهم|یوان)", re.I), currency_tool)
+
+
+async def dispatch_api_tool(client: httpx.AsyncClient, text: str) -> str | None:
+    for name, tool in API_TOOL_REGISTRY.items():
+        matcher = tool["matcher"].search(text)
+        if not matcher:
+            continue
+        if name == "currency":
+            intent = bool(re.search(r"(?i)نرخ|قیمت|ارزش|تبدیل|چند(?:\s*می\s*شود)?|معادل|برابر|\bبه\b|exchange|convert|rate|\bto\b", text))
+            if not intent:
+                return None
+            currency_count = len(_find_currency_codes(convert_persian_digits(text)))
+            if currency_count < 2:
+                if currency_count:
+                    return "برای تبدیل ارز، ارز مقصد را هم بنویس؛ نمونه: «۱۰۰ دلار به یورو»."
+                return None
+        try:
+            return await tool["handler"](client, text, matcher)
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            log.warning("API tool %s failed (%s)", name, type(exc).__name__)
+            return f"سرویس دادهٔ {name} فعلاً پاسخ نداد؛ کمی بعد دوباره امتحان کن. داده‌ای حدس نزدم."
+    return None
 
 
 def safe_provider_error(exc: Exception) -> str:
@@ -675,8 +816,9 @@ async def model_chat(
     *,
     model: str | None = None,
     provider: str | None = None,
+    fallback_on_error: bool = False,
 ) -> dict[str, Any]:
-    """Use one explicitly selected provider, or configured order with fallback in auto mode."""
+    """Use the selected provider, with optional explicit failover, or configured auto order."""
     providers = {
         "apmix": (bool(APMIX_API_KEY), apmix_chat),
         "gemini": (bool(GEMINI_API_KEY), gemini_chat),
@@ -687,6 +829,8 @@ async def model_chat(
         if not providers[provider][0]:
             raise RuntimeError(f"Selected provider {provider} is not configured")
         provider_order = [provider]
+        if fallback_on_error:
+            provider_order.extend(name for name in AI_PROVIDER_ORDER + ["apmix", "gemini"] if name != provider)
     else:
         provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini"]
     errors: list[str] = []
@@ -730,10 +874,15 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
         if memories:
             system_prompt += "\nUser-approved personal notes (use only when relevant; do not infer additional private facts):\n" + "\n".join(f"- {content}" for _, content in memories)
     citations: list[dict[str, str]] = []
+    if isinstance(user_content, str):
+        tool_answer = await dispatch_api_tool(client, user_content)
+        if tool_answer is not None:
+            return tool_answer
     if isinstance(user_content, str) and should_search_web(user_content):
         search_result = await tavily_search(client, user_content)
         citations = search_result.get("results", [])
         if citations:
+            system_prompt += " When sources are supplied, separate a short section labelled 'اطلاعات منبع‌شده' from 'تحلیل' (clearly marked as your interpretation). Attach [n] citations to factual statements, preserve publication dates when available, and say when a date is unavailable. Never present inference as directly sourced fact."
             search_context = "\n\nWeb search results (cite relevant items as [1], [2], etc.):\n" + "\n".join(
                 f"[{i}] {item.get('title', '')} ({item.get('published_date') or 'date unavailable'}) ({item.get('url', '')}): {item.get('content', '')}"
                 for i, item in enumerate(citations[:8], 1)
@@ -745,7 +894,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
     selected_provider = settings.get("ai_provider", "auto")
     if selected_provider not in {"apmix", "gemini"}:
         selected_provider = None
-    completion = await model_chat(client, messages, model=model, provider=selected_provider)
+    completion = await model_chat(client, messages, model=model, provider=selected_provider, fallback_on_error=bool(settings.get("fallback_on_error", False)))
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
     if citations:
         unique: list[dict[str, str]] = []
@@ -779,7 +928,7 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compar
         if compare else "Answer the user's request using the search results. "
     )
     prompt = (
-        instruction + "Cite factual claims with [1], [2], etc. Do not invent facts or treat snippets as definitive.\n\n"
+        instruction + "Format the answer under two clear Persian headings: اطلاعات منبع‌شده (only claims supported by results, with citations and dates) and تحلیل (your clearly labeled reasoning). Cite factual claims with [1], [2], etc. Do not invent facts or treat snippets as definitive; state when publication dates are unavailable.\n\n"
         f"User request: {query}\n\nSearch results:\n{sources}"
     )
     response = await model_chat(client, [
@@ -788,7 +937,7 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compar
     ])
     answer = response["choices"][0]["message"].get("content") or "نتوانستم نتایج جست‌وجو را خلاصه کنم."
     refs = "\n\nمنابع:\n" + "\n".join(
-        f"[{i}] {item.get('title') or item.get('url')} — {item.get('url')}"
+        f"[{i}] {item.get('title') or item.get('url')} — {item.get('url')}" + (f" ({item.get('published_date')})" if item.get("published_date") else " (تاریخ انتشار موجود نیست)")
         for i, item in enumerate(results[:8], 1)
     )
     return str(answer) + refs
@@ -913,23 +1062,29 @@ async def handle_menu_action(
     reply_to: int | None = None,
 ) -> None:
     if action == "provider_menu":
-        selected = get_user_settings(user_id).get("ai_provider", "auto")
-        labels = {"auto": "خودکار (ترتیب پیش‌فرض و fallback)", "apmix": "APMIX", "gemini": "Gemini"}
-        await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\n"
-                        "انتخاب دستی فقط از همان سرویس استفاده می‌کند و در صورت خطا به سرویس دیگر نمی‌رود.",
-                        reply_to, AI_PROVIDER_MARKUP)
+        settings = get_user_settings(user_id)
+        selected = settings.get("ai_provider", "auto")
+        labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini"}
+        failover = "روشن است؛ در شکست provider انتخابی به سرویس دیگر می‌رود." if settings.get("fallback_on_error") else "خاموش است؛ provider دستی به سرویس دیگر نمی‌رود."
+        await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\nجایگزینی هنگام خطا: {failover}",
+                        reply_to, ai_provider_markup(user_id))
     elif action == "select_provider_apmix":
         if not APMIX_API_KEY:
-            await send_text(client, chat_id, "APMIX پیکربندی نشده است؛ APMIX_API_KEY را در Railway Variables تنظیم کن.", reply_to, AI_PROVIDER_MARKUP)
+            await send_text(client, chat_id, "APMIX پیکربندی نشده است؛ APMIX_API_KEY را در Railway Variables تنظیم کن.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "apmix")
             await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید APMIX ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
     elif action == "select_provider_gemini":
         if not GEMINI_API_KEY:
-            await send_text(client, chat_id, "Gemini پیکربندی نشده است؛ GEMINI_API_KEY را در Railway Variables قرار بده.", reply_to, AI_PROVIDER_MARKUP)
+            await send_text(client, chat_id, "Gemini پیکربندی نشده است؛ GEMINI_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "gemini")
             await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با Gemini ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "toggle_provider_fallback":
+        current = bool(get_user_settings(user_id).get("fallback_on_error", False))
+        set_user_setting(user_id, "fallback_on_error", not current)
+        label = "روشن" if not current else "خاموش"
+        await send_text(client, chat_id, f"جایگزینی به ارائه‌دهندهٔ دیگر هنگام خطا {label} شد.", reply_to, ai_provider_markup(user_id))
     elif action == "select_provider_auto":
         set_user_setting(user_id, "ai_provider", "auto")
         await send_text(client, chat_id, "حالت خودکار فعال شد؛ بات طبق AI_PROVIDER_ORDER ارائه‌دهنده‌ها را امتحان می‌کند و در صورت خطا fallback می‌کند.", reply_to, MAIN_MENU_MARKUP)
