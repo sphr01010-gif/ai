@@ -29,10 +29,9 @@ log = logging.getLogger("personal_telegram_bot")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 APMIX_API_KEY = os.getenv("APMIX_API_KEY", "").strip()
-TOOKEN_API_KEY = os.getenv("TOOKEN_API_KEY", "").strip()
-TOOKEN_API_BASE_URL = os.getenv("TOOKEN_API_BASE_URL", "").strip().rstrip("/")
-TOOKEN_MODEL = os.getenv("TOOKEN_MODEL", "").strip()
-AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,tooken").split(",") if name.strip()]
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
@@ -67,7 +66,7 @@ MAIN_MENU_MARKUP = {
 
 AI_PROVIDER_MARKUP = {
     "keyboard": [
-        [{"text": "APMIX"}, {"text": "Tooken"}],
+        [{"text": "APMIX"}, {"text": "Gemini"}],
         [{"text": "خودکار"}, {"text": "بازگشت"}],
     ],
     "resize_keyboard": True,
@@ -171,14 +170,14 @@ MENU_BUTTON_ACTIONS = {
     "جست‌وجوی وب": "search",
     "انتخاب API": "provider_menu",
     "APMIX": "select_provider_apmix",
-    "Tooken": "select_provider_tooken",
+    "Gemini": "select_provider_gemini",
     "خودکار": "select_provider_auto",
     "بازگشت": "home",
 }
 
 HELP_TEXT = (
     "سلام! من دستیار هوش مصنوعی تو هستم.\n\n"
-    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX یا Tooken را برای چت برگزینی."
+    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX یا Gemini را برای چت برگزینی."
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
@@ -290,6 +289,8 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
                 settings.update(stored)
         except json.JSONDecodeError:
             pass
+    if settings.get("ai_provider") not in {"auto", "apmix", "gemini"}:
+        settings["ai_provider"] = "auto"
     return settings
 
 
@@ -305,7 +306,7 @@ def set_user_setting(user_id: int, name: str, value: Any) -> dict[str, Any]:
     settings = get_user_settings(user_id)
     if name not in DEFAULT_USER_SETTINGS:
         raise ValueError("Unknown user setting")
-    if name == "ai_provider" and value not in {"auto", "apmix", "tooken"}:
+    if name == "ai_provider" and value not in {"auto", "apmix", "gemini"}:
         raise ValueError("Invalid AI provider")
     settings[name] = value
     save_user_settings(user_id, settings)
@@ -607,27 +608,61 @@ async def apmix_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], 
     return response.json()
 
 
-async def tooken_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
-    """Call Tooken's OpenAI-compatible endpoint using independent Railway settings."""
-    if not TOOKEN_API_KEY:
-        raise RuntimeError("TOOKEN_API_KEY is not configured")
-    if not TOOKEN_API_BASE_URL:
-        raise RuntimeError("TOOKEN_API_BASE_URL is not configured")
-    selected_model = model or TOOKEN_MODEL
+async def gemini_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Call the Google Gemini generateContent REST API."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    selected_model = model or GEMINI_MODEL
     if not selected_model:
-        raise RuntimeError("TOOKEN_MODEL is not configured")
-    url = TOOKEN_API_BASE_URL if TOOKEN_API_BASE_URL.endswith("/chat/completions") else f"{TOOKEN_API_BASE_URL}/chat/completions"
-    payload: dict[str, Any] = {"model": selected_model, "messages": messages, "temperature": 0.6, "max_tokens": 1300}
-    response = await client.post(url, headers={"Authorization": f"Bearer {TOOKEN_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=100)
+        raise RuntimeError("GEMINI_MODEL is not configured")
+
+    system_parts: list[dict[str, str]] = []
+    contents: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if role == "system":
+            if isinstance(content, str) and content:
+                system_parts.append({"text": content})
+            continue
+        gemini_role = "model" if role == "assistant" else "user"
+        parts: list[dict[str, Any]] = []
+        if isinstance(content, str):
+            parts.append({"text": content})
+        elif isinstance(content, list):
+            for item in content:
+                if item.get("type") == "text":
+                    parts.append({"text": item.get("text", "")})
+                elif item.get("type") == "image_url":
+                    uri = item.get("image_url", {}).get("url", "")
+                    match = re.match(r"^data:([^;]+);base64,(.+)$", uri, flags=re.S)
+                    if match:
+                        parts.append({"inline_data": {"mime_type": match.group(1), "data": match.group(2)}})
+        if parts:
+            contents.append({"role": gemini_role, "parts": parts})
+
+    if not contents:
+        raise ValueError("Gemini request contains no user content")
+    payload: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1300}}
+    if system_parts:
+        payload["system_instruction"] = {"parts": system_parts}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent"
+    response = await client.post(url, headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}, json=payload, timeout=100)
     if response.status_code >= 400:
-        raise RuntimeError(f"Tooken API HTTP {response.status_code}: {response.text[:700]}")
-    return response.json()
+        detail = safe_provider_error(RuntimeError(response.text))
+        raise RuntimeError(f"Gemini API HTTP {response.status_code}: {detail}")
+    data = response.json()
+    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    answer = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+    if not answer:
+        raise RuntimeError("Gemini returned no text candidate")
+    return {"choices": [{"message": {"content": answer}}]}
 
 
 def safe_provider_error(exc: Exception) -> str:
     """Return a short provider error without leaking API credentials."""
     detail = str(exc).replace("\r", " ").replace("\n", " ")
-    for secret in (APMIX_API_KEY, TOOKEN_API_KEY):
+    for secret in (APMIX_API_KEY, GEMINI_API_KEY):
         if secret:
             detail = detail.replace(secret, "[REDACTED]")
     detail = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", detail)
@@ -644,7 +679,7 @@ async def model_chat(
     """Use one explicitly selected provider, or configured order with fallback in auto mode."""
     providers = {
         "apmix": (bool(APMIX_API_KEY), apmix_chat),
-        "tooken": (bool(TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL), tooken_chat),
+        "gemini": (bool(GEMINI_API_KEY), gemini_chat),
     }
     if provider is not None:
         if provider not in providers:
@@ -653,7 +688,7 @@ async def model_chat(
             raise RuntimeError(f"Selected provider {provider} is not configured")
         provider_order = [provider]
     else:
-        provider_order = AI_PROVIDER_ORDER + ["apmix", "tooken"]
+        provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini"]
     errors: list[str] = []
     visited: set[str] = set()
     for name in provider_order:
@@ -670,7 +705,7 @@ async def model_chat(
             log.warning("AI provider %s failed (%s): %s", name, type(exc).__name__, safe_detail)
             errors.append(f"{name}: {type(exc).__name__}: {safe_detail}")
     if not errors:
-        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY or all Tooken variables.")
+        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY or GEMINI_API_KEY.")
     raise RuntimeError("All configured AI providers failed: " + "; ".join(errors))
 
 
@@ -708,7 +743,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_content}]
     selected_provider = settings.get("ai_provider", "auto")
-    if selected_provider not in {"apmix", "tooken"}:
+    if selected_provider not in {"apmix", "gemini"}:
         selected_provider = None
     completion = await model_chat(client, messages, model=model, provider=selected_provider)
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
@@ -879,7 +914,7 @@ async def handle_menu_action(
 ) -> None:
     if action == "provider_menu":
         selected = get_user_settings(user_id).get("ai_provider", "auto")
-        labels = {"auto": "خودکار (ترتیب پیش‌فرض و fallback)", "apmix": "APMIX", "tooken": "Tooken"}
+        labels = {"auto": "خودکار (ترتیب پیش‌فرض و fallback)", "apmix": "APMIX", "gemini": "Gemini"}
         await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\n"
                         "انتخاب دستی فقط از همان سرویس استفاده می‌کند و در صورت خطا به سرویس دیگر نمی‌رود.",
                         reply_to, AI_PROVIDER_MARKUP)
@@ -889,12 +924,12 @@ async def handle_menu_action(
         else:
             set_user_setting(user_id, "ai_provider", "apmix")
             await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید APMIX ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
-    elif action == "select_provider_tooken":
-        if not (TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL):
-            await send_text(client, chat_id, "Tooken هنوز کامل پیکربندی نشده است؛ TOOKEN_API_KEY، TOOKEN_API_BASE_URL و TOOKEN_MODEL را در Railway Variables تنظیم کن.", reply_to, AI_PROVIDER_MARKUP)
+    elif action == "select_provider_gemini":
+        if not GEMINI_API_KEY:
+            await send_text(client, chat_id, "Gemini پیکربندی نشده است؛ GEMINI_API_KEY را در Railway Variables قرار بده.", reply_to, AI_PROVIDER_MARKUP)
         else:
-            set_user_setting(user_id, "ai_provider", "tooken")
-            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید Tooken ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+            set_user_setting(user_id, "ai_provider", "gemini")
+            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با Gemini ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
     elif action == "select_provider_auto":
         set_user_setting(user_id, "ai_provider", "auto")
         await send_text(client, chat_id, "حالت خودکار فعال شد؛ بات طبق AI_PROVIDER_ORDER ارائه‌دهنده‌ها را امتحان می‌کند و در صورت خطا fallback می‌کند.", reply_to, MAIN_MENU_MARKUP)
@@ -1341,7 +1376,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
         if "TAVILY_API_KEY" in message_text:
             await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to, MAIN_MENU_MARKUP)
         elif "No AI provider is configured" in message_text or "not configured" in message_text:
-            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ کلید APMIX یا هر سه متغیر TOOKEN_API_KEY، TOOKEN_API_BASE_URL و TOOKEN_MODEL را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ APMIX_API_KEY یا GEMINI_API_KEY را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
         else:
             await send_text(client, chat_id, f"نتوانستم این پیام را پردازش کنم: {message_text[:500]}", reply_to, MAIN_MENU_MARKUP)
 
@@ -1490,8 +1525,8 @@ async def reminder_loop(client: httpx.AsyncClient) -> None:
 
 async def run() -> None:
     missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID)) if not value]
-    if not APMIX_API_KEY and not (TOOKEN_API_KEY and TOOKEN_API_BASE_URL and TOOKEN_MODEL):
-        missing.append("APMIX_API_KEY or TOOKEN_API_KEY + TOOKEN_API_BASE_URL + TOOKEN_MODEL")
+    if not APMIX_API_KEY and not GEMINI_API_KEY:
+        missing.append("APMIX_API_KEY or GEMINI_API_KEY")
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     try:
