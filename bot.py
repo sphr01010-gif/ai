@@ -624,6 +624,16 @@ async def tooken_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]],
     return response.json()
 
 
+def safe_provider_error(exc: Exception) -> str:
+    """Return a short provider error without leaking API credentials."""
+    detail = str(exc).replace("\r", " ").replace("\n", " ")
+    for secret in (APMIX_API_KEY, TOOKEN_API_KEY):
+        if secret:
+            detail = detail.replace(secret, "[REDACTED]")
+    detail = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", detail)
+    return detail[:350]
+
+
 async def model_chat(
     client: httpx.AsyncClient,
     messages: list[dict[str, Any]],
@@ -656,8 +666,9 @@ async def model_chat(
         try:
             return await caller(client, messages, model=model if name == "apmix" else None)
         except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-            log.warning("AI provider %s failed (%s); trying next configured provider", name, type(exc).__name__)
-            errors.append(f"{name}: {type(exc).__name__}")
+            safe_detail = safe_provider_error(exc)
+            log.warning("AI provider %s failed (%s): %s", name, type(exc).__name__, safe_detail)
+            errors.append(f"{name}: {type(exc).__name__}: {safe_detail}")
     if not errors:
         raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY or all Tooken variables.")
     raise RuntimeError("All configured AI providers failed: " + "; ".join(errors))
