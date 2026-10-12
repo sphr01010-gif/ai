@@ -32,6 +32,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 APMIX_API_KEY = os.getenv("APMIX_API_KEY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
+CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
@@ -58,6 +61,7 @@ MAIN_MENU_MARKUP = {
     "keyboard": [
         [{"text": "گفت‌وگو"}, {"text": "جست‌وجوی وب"}],
         [{"text": "انتخاب API"}],
+        [{"text": "ساخت تصویر"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
@@ -184,6 +188,7 @@ MENU_BUTTON_ACTIONS = {
     "گفت‌وگو": "chat",
     "جست‌وجوی وب": "search",
     "انتخاب API": "provider_menu",
+    "ساخت تصویر": "create_image",
     "APMIX": "select_provider_apmix",
     "Gemini": "select_provider_gemini",
     "خودکار": "select_provider_auto",
@@ -587,6 +592,31 @@ async def send_text(
         if reply_markup is not None and i == len(parts) - 1:
             payload["reply_markup"] = reply_markup
         await telegram_call(client, "sendMessage", payload)
+
+
+async def send_photo(
+    client: httpx.AsyncClient,
+    chat_id: int,
+    image: bytes,
+    caption: str = "تصویر ساخته شد.",
+    reply_to: int | None = None,
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
+    data: dict[str, str] = {"chat_id": str(chat_id), "caption": caption[:1024]}
+    if reply_to:
+        data["reply_to_message_id"] = str(reply_to)
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    response = await client.post(
+        f"{TG_API}/sendPhoto",
+        data=data,
+        files={"photo": ("flux-image.jpg", image, "image/jpeg")},
+        timeout=70,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram sendPhoto failed: {body.get('description', 'unknown error')}")
 
 
 async def download_telegram_file(client: httpx.AsyncClient, file_id: str) -> tuple[bytes, str]:
@@ -1061,7 +1091,13 @@ async def handle_menu_action(
     action: str,
     reply_to: int | None = None,
 ) -> None:
-    if action == "provider_menu":
+    if action == "create_image":
+        if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+            await send_text(client, chat_id, "ساخت تصویر هنوز تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
+        else:
+            set_user_state(user_id, "await_image_prompt")
+            await send_text(client, chat_id, "شرح تصویر را به فارسی یا انگلیسی بفرست؛ با مدل FLUX.1 [schnell] ساخته و همین‌جا ارسال می‌شود.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "provider_menu":
         settings = get_user_settings(user_id)
         selected = settings.get("ai_provider", "auto")
         labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini"}
@@ -1296,6 +1332,67 @@ async def handle_menu_action(
         await send_text(client, chat_id, "منوی اصلی:", reply_to, MAIN_MENU_MARKUP)
 
 
+IMAGE_INTENT_RE = re.compile(
+    r"(?is)(?:تصویرسازی|تصویر|عکس|نقاشی|image|picture|illustration).{0,4096}(?:بساز|بکش|تولید\s*کن|ایجاد\s*کن|درست\s*کن|generate|create|draw|make)|"
+    r"(?:بساز|بکش|تولید\s*کن|ایجاد\s*کن|درست\s*کن|generate|create|draw|make).{0,4096}(?:تصویرسازی|تصویر|عکس|نقاشی|image|picture|illustration)"
+)
+
+
+def extract_image_prompt(text: str) -> str | None:
+    """Recognize explicit Persian/English image-generation requests and extract their prompt."""
+    raw = text.strip()
+    if not raw or not IMAGE_INTENT_RE.search(raw):
+        return None
+    prompt = raw
+    prompt = re.sub(r"(?i)^\s*(?:/image\s*)?", "", prompt)
+    prompt = re.sub(r"(?is)^.*?(?:تصویرسازی|تصویر|عکس|نقاشی|image|picture|illustration)\s*(?:(?:از|of)\s*)?", "", prompt, count=1)
+    prompt = re.sub(r"(?is)\s*(?:بساز|بکش|تولید\s*کن|ایجاد\s*کن|درست\s*کن|generate|create|draw|make)\s*[.!؟?]*\s*$", "", prompt)
+    prompt = re.sub(r"(?is)^\s*(?:بساز|بکش|تولید\s*کن|ایجاد\s*کن|درست\s*کن|generate|create|draw|make)\s+", "", prompt)
+    prompt = re.sub(r"(?is)^\s*(?:از|of)\s+", "", prompt)
+    prompt = re.sub(r"^\s*(?:(?:یک|یه|a|an|the)\s+)+", "", prompt, flags=re.I)
+    prompt = prompt.strip(" \t\r\n:،,؛;.!؟?-")
+    return prompt[:2048] if prompt else None
+
+
+async def cloudflare_generate_image(client: httpx.AsyncClient, prompt: str) -> bytes:
+    """Generate one image through Cloudflare Workers AI FLUX.1 [schnell]."""
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        raise RuntimeError("Cloudflare Workers AI is not configured; set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.")
+    if not re.fullmatch(r"[A-Fa-f0-9]{32}", CLOUDFLARE_ACCOUNT_ID):
+        raise ValueError("Cloudflare Account ID must be the 32-character ID shown in the Cloudflare dashboard.")
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("شرح تصویر خالی است؛ دوباره از دکمهٔ ساخت تصویر شروع کن.")
+    if len(prompt) > 2048:
+        raise ValueError("شرح تصویر باید حداکثر ۲۰۴۸ نویسه باشد.")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_FLUX_MODEL}"
+    response = await client.post(url, headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}", "Content-Type": "application/json"}, json={"prompt": prompt, "steps": 4}, timeout=150)
+    if response.status_code >= 400:
+        log.warning("Cloudflare image generation failed with HTTP %s", response.status_code)
+        raise RuntimeError(f"Cloudflare Workers AI image API returned HTTP {response.status_code}.")
+    content_type = response.headers.get("content-type", "") if hasattr(response, "headers") else ""
+    if content_type.startswith("image/"):
+        image = response.content
+    else:
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Cloudflare returned an invalid image response.") from exc
+        result = body.get("result") or {}
+        encoded = result.get("image") if isinstance(result, dict) else None
+        if body.get("success") is False or not encoded:
+            raise RuntimeError("Cloudflare did not return an image; check Workers AI token permissions and account quota.")
+        try:
+            image = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Cloudflare returned invalid base64 image data.") from exc
+    if not image:
+        raise RuntimeError("Cloudflare returned an empty image.")
+    if len(image) > 10 * 1024 * 1024:
+        raise RuntimeError("Generated image is larger than Telegram's photo upload limit.")
+    return image
+
+
 async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) -> None:
     sender = message.get("from", {})
     user_id = sender.get("id")
@@ -1313,7 +1410,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     normalized = convert_persian_digits(text).strip()
     reply_to = message.get("message_id")
     pending_action = get_user_state(user_id)
-    if pending_action and pending_action not in {"chat", "await_search"}:
+    if pending_action and pending_action not in {"chat", "await_search", "await_image_prompt"}:
         # Clear any unfinished state from features removed from the Telegram menu.
         set_user_state(user_id, None)
         pending_action = None
@@ -1396,7 +1493,20 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     if pending_action == "chat" and message.get("text"):
         set_user_state(user_id, None)
     try:
-        await telegram_call(client, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+        image_prompt = text.strip() if pending_action == "await_image_prompt" else (extract_image_prompt(text) if message.get("text") else None)
+        if image_prompt is not None:
+            if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+                set_user_state(user_id, None)
+                await send_text(client, chat_id, "ساخت تصویر تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
+                return
+            if not image_prompt:
+                await send_text(client, chat_id, "شرح تصویر خالی است؛ یک بار دیگر توصیف کن.", reply_to, MAIN_MENU_MARKUP)
+                return
+            set_user_state(user_id, None)
+            await telegram_call(client, "sendChatAction", {"chat_id": chat_id, "action": "upload_photo"})
+            image = await cloudflare_generate_image(client, image_prompt)
+            await send_photo(client, chat_id, image, "تصویر ساخته‌شده با FLUX.1 [schnell].", reply_to, MAIN_MENU_MARKUP)
+            return
 
         if pending_action in {"await_search", "await_compare_search"} and message.get("text"):
             query = text.strip()
@@ -1528,7 +1638,9 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     except Exception as exc:
         log.exception("Message processing failed: %s", type(exc).__name__)
         message_text = str(exc)
-        if "TAVILY_API_KEY" in message_text:
+        if "CLOUDFLARE_ACCOUNT_ID" in message_text or "Cloudflare Workers AI is not configured" in message_text:
+            await send_text(client, chat_id, "ساخت تصویر تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
+        elif "TAVILY_API_KEY" in message_text:
             await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to, MAIN_MENU_MARKUP)
         elif "No AI provider is configured" in message_text or "not configured" in message_text:
             await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ APMIX_API_KEY یا GEMINI_API_KEY را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)

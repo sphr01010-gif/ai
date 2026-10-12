@@ -11,6 +11,7 @@
 - **گفت‌وگو:** متن دلخواهت را بفرست.
 - **جست‌وجوی وب:** پرسشت را بفرست تا پاسخ همراه منبع بگیری.
 - **انتخاب API:** برای چت APMIX، Gemini یا «خودکار» را انتخاب کن. انتخاب برای حساب تلگرامی تو ذخیره می‌شود؛ در انتخاب دستی، جایگزینی خودکار خاموش است مگر اینکه دکمهٔ «جایگزینی هنگام خطا» را روشن کنی.
+- **ساخت تصویر:** یک توضیح کوتاه بفرست تا Cloudflare FLUX.1 [schnell] تصویر را تولید کند؛ این گزینه به Cloudflare Account ID و API Token نیاز دارد.
 
 Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو بار با مکث افزایشی و کوتاه دوباره تلاش می‌کند. خطاهای احراز هویت و درخواست‌های نامعتبر retry نمی‌شوند. در حالت دستی، fallback فقط با روشن‌کردن دکمهٔ جداگانه فعال می‌شود؛ حالت «خودکار» همچنان ترتیب `AI_PROVIDER_ORDER` را دنبال می‌کند.
 
@@ -19,6 +20,12 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 بات درخواست آب‌وهوا را از متن تشخیص می‌دهد و برای جست‌وجوی شهر و وضعیت فعلی/پیش‌بینی سه‌روزه از Open-Meteo استفاده می‌کند. مثال: «هوای شیراز چطوره؟». تبدیل ارز نیز بدون API key از Frankfurter استفاده می‌کند؛ مثال: «۱۰۰ دلار به یورو چند می‌شود؟». برای تبدیل، مبدأ و مقصد را صریح بنویس. نرخ‌های Frankfurter تاریخ‌دار و مرجع‌اند، نه نرخ لحظه‌ای خریدوفروش یا نرخ تضمینی بازار ایران. این endpoint عمومی برای نرخ/تجارت لحظه‌ای طراحی نشده است.
 
 قابلیت‌های جدید به شکل registry در `bot.py` پیاده شده‌اند؛ ابزار تازه را با تابع `register_api_tool(name, matcher, handler)` می‌توان اضافه کرد، تا intent مناسب به handler همان API هدایت شود. ابزارهای داده‌ای پاسخ را از مقدار بازگشتی API می‌سازند و هنگام شکست سرویس مقدار حدسی نمی‌دهند. Open-Meteo و Frankfurter در نمونهٔ فعلی به کلید جداگانه نیاز ندارند؛ شرایط مجوز Open-Meteo را برای استفادهٔ تجاری جداگانه بررسی کن.
+
+## ساخت تصویر با Cloudflare Workers AI
+
+در داشبورد Cloudflare از بخش **Workers AI → Use REST API** یک Workers AI API Token بساز و **Account ID** را بردار. اگر به‌جای token آماده، token سفارشی می‌سازی، مستندات Cloudflare برای این API مجوزهای `Workers AI - Read` و `Workers AI - Edit` را ذکر می‌کند. هر دو مقدار را فقط در Railway → Service → Variables با نام‌های `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` قرار بده؛ token را در GitHub یا گفتگو نفرست.
+
+پس از deploy، روی دکمهٔ «ساخت تصویر» بزن و prompt را در پیام بعدی بفرست؛ یا مستقیم بنویس «یک تصویر از یک گربهٔ فضانورد بساز» / `Generate an image of a space cat`. ربات از مدل `@cf/black-forest-labs/flux-1-schnell` و مقدار `steps=4` استفاده می‌کند و خروجی را به‌صورت عکس تلگرام می‌فرستد. prompt حداکثر ۲۰۴۸ نویسه است. ممکن است اجرای Workers AI طبق سهمیه/طرح حساب Cloudflare هزینه یا محدودیت مصرف داشته باشد؛ جزئیات را پیش از استفاده بررسی کن.
 
 ## کیفیت پاسخ‌های جست‌وجو
 
@@ -57,6 +64,7 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 - `GEMINI_MODEL` — شناسهٔ مدل Gemini؛ پیش‌فرض `gemini-3.8-flash`.
 - `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback در حالت خودکار؛ پیش‌فرض `apmix,gemini`، برای اولویت Gemini مقدار `gemini,apmix` بگذار. در حالت انتخاب دستی fallback را از دکمهٔ «انتخاب API» کنترل کن.
 - `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. بدون آن گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب غیرفعال است.
+- `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` — اختیاری؛ برای ساخت تصویر با Cloudflare Workers AI. این token جدا از کلیدهای APMIX و Gemini است.
 - `TIMEZONE` — منطقهٔ زمانی؛ پیش‌فرض `Asia/Tehran`.
 - `BOT_DATA_DIR` — در Railway مقدار `/data`.
 
@@ -91,7 +99,7 @@ python bot.py
 
 ## منابع رسمی
 
-- [Google Gemini API](https://Gemini.club/)
+- [Google Gemini API](https://ai.google.dev/gemini-api/docs)
 - [APMIX API Docs](https://apmix.ai/docs)
 - [APMIX Models](https://apmix.ai/models)
 - [APMIX Pricing](https://apmix.ai/pricing)

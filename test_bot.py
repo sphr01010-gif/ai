@@ -190,7 +190,7 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "انتخاب API"}
+    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "انتخاب API", "ساخت تصویر"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
 
@@ -805,3 +805,91 @@ def test_currency_pair_without_conversion_intent_does_not_call_tool():
     answer = asyncio.run(bot.dispatch_api_tool(object(), "I like USD and EUR"))
     assert answer is None
 
+
+
+
+def test_image_intent_extraction_persian_and_english():
+    assert bot.extract_image_prompt("یک تصویر از یک گربهٔ فضانورد بساز") == "گربهٔ فضانورد"
+    assert bot.extract_image_prompt("عکس بساز از کوه‌های آلپ") == "کوه‌های آلپ"
+    assert bot.extract_image_prompt("Generate an image of a red fox") == "red fox"
+    assert bot.extract_image_prompt("Please explain how image generation works") is None
+
+
+def test_image_prompt_length_limit():
+    assert len(bot.extract_image_prompt("تصویر " + "x" * 2100 + " بساز")) == 2048
+
+
+def test_cloudflare_image_raw_bytes_response(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "a" * 32)
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "test-token")
+
+    async def handler(request):
+        assert request.method == "POST"
+        assert request.url.path.endswith("/@cf/black-forest-labs/flux-1-schnell")
+        assert request.headers["authorization"] == "Bearer test-token"
+        assert b'"steps":4' in request.content
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"png-image")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.cloudflare_generate_image(client, "a red fox")
+
+    assert asyncio.run(run()) == b"png-image"
+
+
+def test_cloudflare_image_base64_json_response(monkeypatch):
+    import base64
+    import httpx
+
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "b" * 32)
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "test-token")
+    encoded = base64.b64encode(b"jpeg-image").decode("ascii")
+
+    async def handler(request):
+        return httpx.Response(200, json={"success": True, "result": {"image": encoded}})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.cloudflare_generate_image(client, "a red fox")
+
+    assert asyncio.run(run()) == b"jpeg-image"
+
+
+def test_cloudflare_image_missing_config_and_invalid_account_id(monkeypatch):
+    import httpx
+    import pytest
+
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "")
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "")
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            await bot.cloudflare_generate_image(client, "a red fox")
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        asyncio.run(run())
+
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "not-an-account-id")
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "test-token")
+    with pytest.raises(ValueError, match="32-character ID"):
+        asyncio.run(run())
+
+
+def test_cloudflare_image_http_error_is_reported(monkeypatch):
+    import httpx
+    import pytest
+
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "c" * 32)
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "test-token")
+
+    async def handler(request):
+        return httpx.Response(503, text="temporarily unavailable")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await bot.cloudflare_generate_image(client, "a red fox")
+
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        asyncio.run(run())
