@@ -9,12 +9,14 @@ import io
 import json
 import logging
 import os
+import posixpath
 import random
 import re
 import sqlite3
 import time
+import zipfile
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -49,6 +51,12 @@ TZ = ZoneInfo(TIMEZONE_NAME)
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_DOC_CHARS = 28_000
 MAX_HISTORY_MESSAGES = 12
+MAX_GENERATED_FILE_BYTES = 15 * 1024 * 1024
+MAX_GENERATED_TEXT_CHARS = 200_000
+MAX_ZIP_FILES = 20
+MAX_ZIP_TOTAL_CHARS = 300_000
+FILE_CREATE_VERB_RE = re.compile(r"(?:\b(?:create|make|generate|build)\b|بساز|بسازه|ایجاد\s*کن|درست\s*کن|تولید\s*کن|تهیه\s*کن)", re.I)
+FILE_EXTENSION_RE = re.compile(r"\.(py|pdf|zip)\b", re.I)
 
 SYSTEM_PROMPT = (
     "You are a private, helpful personal assistant. Reply in the language used by the user, "
@@ -67,7 +75,7 @@ MAIN_MENU_MARKUP = {
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
-    "input_field_placeholder": "گفت‌وگو، جست‌وجو یا انتخاب API",
+    "input_field_placeholder": "گفت‌وگو، جست‌وجو، ساخت فایل یا انتخاب API",
 }
 
 AI_PROVIDER_MARKUP = {
@@ -711,6 +719,219 @@ async def send_photo(
     body = response.json()
     if not body.get("ok"):
         raise RuntimeError(f"Telegram sendPhoto failed: {body.get('description', 'unknown error')}")
+
+
+def detect_file_generation_request(text: str) -> str | None:
+    """Return a supported suffix only for an explicit, single-format file request."""
+    if not FILE_CREATE_VERB_RE.search(text):
+        return None
+    if re.search(r"\.(?:py|pdf|zip)(?:\s*[-/,،]\s*\.?(?:py|pdf|zip)){1,}", text, re.I):
+        return None
+    suffixes = {"." + match.lower() for match in FILE_EXTENSION_RE.findall(text)}
+    if len(suffixes) == 1:
+        return next(iter(suffixes))
+    if len(suffixes) > 1:
+        if ".zip" in suffixes and re.search(r"(?:شامل|حاوی|داخل|به\s*همراه|بسته\s*بندی|containing|inside|bundle|with|include|contains)", text, re.I):
+            return ".zip"
+        return None
+    if re.search(r"(?:فایل\s+)?(?:پایتون|اسکریپت\s+پایتون|python\s+script)", text, re.I):
+        return ".py"
+    if re.search(r"(?:فایل\s+)?(?:پی\s*دی\s*اف|pdf)", text, re.I):
+        return ".pdf"
+    if re.search(r"(?:فایل\s+)?(?:زیپ|آرشیو|archive|zip)", text, re.I):
+        return ".zip"
+    return None
+
+
+def generated_filename(request: str, suffix: str) -> str:
+    """Use a requested safe basename where possible, otherwise a stable default."""
+    defaults = {".py": "generated_script", ".pdf": "generated_document", ".zip": "generated_bundle"}
+    match = re.search(r"([\w.-]{1,80}" + re.escape(suffix) + r")\b", request, re.I)
+    candidate = match.group(1) if match else defaults[suffix]
+    candidate = PurePosixPath(candidate.replace("\\", "/")).name
+    stem = Path(candidate).stem
+    stem = re.sub(r"[^\w.-]+", "_", stem, flags=re.UNICODE).strip(" .")[:60]
+    return (stem or defaults[suffix]) + suffix
+
+
+def strip_code_fence(text: str) -> str:
+    value = text.strip()
+    match = re.fullmatch(r"```[\w+-]*\s*\n?(.*?)\n?```", value, re.S)
+    return match.group(1).strip() if match else value
+
+
+def build_zip_bytes(files: list[dict[str, Any]]) -> bytes:
+    """Build a small ZIP with validated relative paths; never extract or execute its contents."""
+    if not isinstance(files, list) or not files or len(files) > MAX_ZIP_FILES:
+        raise ValueError(f"فایل ZIP باید بین ۱ تا {MAX_ZIP_FILES} فایل داشته باشد.")
+    total_chars = 0
+    validated: list[tuple[str, str]] = []
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not isinstance(item.get("content"), str):
+            raise ValueError("ساختار یکی از فایل‌های ZIP معتبر نیست.")
+        raw_path = item["path"].replace("\\", "/")
+        normalized = posixpath.normpath(raw_path)
+        parts = PurePosixPath(normalized).parts
+        if (not normalized or normalized in {".", ".."} or normalized.startswith("/")
+                or normalized.startswith("../") or ".." in parts or re.match(r"^[A-Za-z]:", normalized)
+                or not parts or len(normalized) > 180):
+            raise ValueError("مسیر فایل در ZIP امن نیست؛ مسیرها باید نسبی و بدون .. باشند.")
+        content = item["content"]
+        total_chars += len(content)
+        if total_chars > MAX_ZIP_TOTAL_CHARS:
+            raise ValueError("محتوای ZIP بیش از حد بزرگ است؛ درخواست را به فایل‌های کوچک‌تر تقسیم کن.")
+        validated.append((normalized, content))
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for path, content in validated:
+            archive.writestr(path, content.encode("utf-8"))
+    return output.getvalue()
+
+
+def render_text_pdf(markdown: str) -> bytes:
+    """Render a short Markdown-like document into a Unicode Persian/Arabic PDF."""
+    from arabic_reshaper import reshape
+    from bidi.algorithm import get_display
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    font_path = Path(__file__).resolve().parent / "NotoSansArabic-Regular.ttf"
+    if not font_path.is_file():
+        raise RuntimeError("فونت فارسی همراه برنامه پیدا نشد؛ PDF ساخته نشد.")
+    font_name = "NotoSansArabic"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+    body = ParagraphStyle("FaBody", fontName=font_name, fontSize=10.5, leading=17, alignment=TA_RIGHT, wordWrap="CJK", textColor=colors.HexColor("#222222"), spaceAfter=5)
+    heading = ParagraphStyle("FaHeading", parent=body, fontSize=15, leading=22, textColor=colors.HexColor("#15355b"), spaceBefore=8, spaceAfter=7)
+    small = ParagraphStyle("FaSmall", parent=body, fontSize=9, leading=14, textColor=colors.HexColor("#333333"))
+    output = io.BytesIO()
+    document = SimpleDocTemplate(output, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=17 * mm, bottomMargin=17 * mm)
+    story: list[Any] = []
+    in_code = False
+    for raw_line in markdown[:MAX_GENERATED_TEXT_CHARS].splitlines():
+        if raw_line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if not raw_line.strip():
+            story.append(Spacer(1, 4))
+            continue
+        style = body
+        line = raw_line
+        if not in_code:
+            heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.+)$", line)
+            bullet_match = re.match(r"^\s*[-*+]\s+(.+)$", line)
+            number_match = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
+            quote_match = re.match(r"^\s*>\s?(.*)$", line)
+            if heading_match:
+                style = heading
+                line = heading_match.group(2)
+            elif bullet_match:
+                line = "- " + bullet_match.group(1)
+            elif number_match:
+                line = re.sub(r"^\s*", "", line)
+            elif quote_match:
+                style = small
+                line = "│ " + quote_match.group(1)
+            line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 — \2", line)
+            line = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), line)
+            line = re.sub(r"`([^`]+)`", r"\1", line)
+        display_line = line if in_code else get_display(reshape(line))
+        story.append(Paragraph(html.escape(display_line, quote=False), style))
+    document.build(story)
+    result = output.getvalue()
+    if not result.startswith(b"%PDF"):
+        raise RuntimeError("خروجی PDF معتبر ساخته نشد.")
+    return result
+
+
+def zip_manifest_from_model(text: str) -> list[dict[str, Any]]:
+    """Parse the JSON file manifest returned by the model, allowing a surrounding code fence."""
+    value = strip_code_fence(text)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", value, re.S)
+        if not match:
+            raise ValueError("فهرست فایل‌های ZIP از مدل به شکل معتبر دریافت نشد.")
+        parsed = json.loads(match.group(0))
+    files = parsed.get("files") if isinstance(parsed, dict) else parsed
+    if not isinstance(files, list):
+        raise ValueError("ساختار فهرست فایل‌های ZIP معتبر نیست.")
+    return files
+
+
+async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request: str, suffix: str) -> tuple[str, bytes, str]:
+    """Generate a file payload with the user's selected AI provider and local format libraries."""
+    settings = get_user_settings(user_id)
+    provider = settings.get("ai_provider", "auto")
+    if provider not in {"apmix", "gemini"}:
+        provider = None
+    if suffix == ".py":
+        instruction = "Return only complete Python source code. Do not use Markdown fences or explanatory prose. Do not execute the code, claim it was tested, or include secrets."
+    elif suffix == ".pdf":
+        instruction = "Write only the finished document content in Markdown. Use the same language as the request, organize it with headings and lists when useful, and do not include commentary about file generation."
+    elif suffix == ".zip":
+        instruction = 'Return only valid JSON in this exact shape: {"files":[{"path":"project/README.md","content":"file text"}]}. Create a useful small project matching the request. Use only relative paths; no absolute paths, .. segments, symlinks, secrets, or binary/base64 payloads. Do not execute any code.'
+    else:
+        raise ValueError("این نوع فایل هنوز پشتیبانی نمی‌شود.")
+    prompt = "درخواست کاربر (به‌عنوان مشخصات ساخت فایل):\n" + request[:6000]
+    completion = await model_chat(
+        client,
+        [{"role": "system", "content": SYSTEM_PROMPT + "\n" + instruction}, {"role": "user", "content": prompt}],
+        provider=provider,
+        fallback_on_error=bool(settings.get("fallback_on_error", False)),
+    )
+    content = str(completion["choices"][0]["message"].get("content") or "").strip()
+    if not content:
+        raise RuntimeError("مدل محتوای فایل را نساخت؛ دوباره امتحان کن.")
+    if len(content) > MAX_GENERATED_TEXT_CHARS:
+        raise ValueError("محتوای تولیدشده بیش از حد بزرگ است؛ درخواست را کوتاه‌تر کن.")
+    filename = generated_filename(request, suffix)
+    if suffix == ".py":
+        data = strip_code_fence(content).encode("utf-8")
+        mime = "text/x-python"
+    elif suffix == ".pdf":
+        data = render_text_pdf(content)
+        mime = "application/pdf"
+    else:
+        data = build_zip_bytes(zip_manifest_from_model(content))
+        mime = "application/zip"
+    if len(data) > MAX_GENERATED_FILE_BYTES:
+        raise ValueError("فایل ساخته‌شده از حد مجاز ارسال تلگرام بزرگ‌تر است.")
+    return filename, data, mime
+
+
+async def send_document(
+    client: httpx.AsyncClient,
+    chat_id: int,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    caption: str,
+    reply_to: int | None = None,
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
+    data = {"chat_id": str(chat_id), "caption": caption[:1024]}
+    if reply_to:
+        data["reply_to_message_id"] = str(reply_to)
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    response = await client.post(
+        f"{TG_API}/sendDocument",
+        data=data,
+        files={"document": (filename, content, content_type)},
+        timeout=90,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram sendDocument failed: {body.get('description', 'unknown error')}")
 
 
 async def download_telegram_file(client: httpx.AsyncClient, file_id: str) -> tuple[bytes, str]:
@@ -1719,6 +1940,13 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
                 await send_text(client, chat_id, answer, reply_to, DOCUMENT_MARKUP)
             else:
                 await send_text(client, chat_id, answer, reply_to, MAIN_MENU_MARKUP)
+            return
+
+        file_suffix = detect_file_generation_request(text) if text else None
+        if file_suffix:
+            await send_text(client, chat_id, "در حال ساخت فایل؛ کدهای تولیدشده اجرا نمی‌شوند.", reply_to)
+            filename, data, content_type = await create_file_artifact(client, user_id, text, file_suffix)
+            await send_document(client, chat_id, filename, data, content_type, f"فایل آماده شد: {filename}", reply_to, MAIN_MENU_MARKUP)
             return
 
         if text:

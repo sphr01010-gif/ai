@@ -1,4 +1,6 @@
 import asyncio
+import io
+import zipfile
 from datetime import datetime, timedelta
 
 import bot
@@ -863,6 +865,81 @@ def test_split_telegram_text_preserves_content_and_respects_limit():
     parts = bot.split_telegram_text(text, limit=10)
     assert "".join(parts) == text
     assert all(len(part) <= 10 for part in parts)
+
+
+def test_file_generation_detection_requires_one_explicit_format():
+    assert bot.detect_file_generation_request("لطفاً یک فایل .py بساز که دو عدد را جمع کند") == ".py"
+    assert bot.detect_file_generation_request("یک main.py بساز که دو عدد را جمع کند") == ".py"
+    assert bot.detect_file_generation_request("یه فایل PDF بساز دربارهٔ برنامه سفر") == ".pdf"
+    assert bot.detect_file_generation_request("یک فایل .zip بساز شامل چند فایل نمونه") == ".zip"
+    assert bot.detect_file_generation_request("میخوام فایل های .py-pdf-zip بسازه") is None
+    assert bot.detect_file_generation_request("فایل .py") is None
+
+
+def test_generated_filename_is_a_safe_basename():
+    assert bot.generated_filename("لطفاً ../../secret.py بساز", ".py") == "secret.py"
+    assert bot.generated_filename("یک PDF بساز", ".pdf") == "generated_document.pdf"
+
+
+def test_build_zip_bytes_keeps_files_and_rejects_path_traversal():
+    payload = bot.build_zip_bytes([
+        {"path": "project/main.py", "content": "print('ok')"},
+        {"path": "project/README.md", "content": "hello"},
+    ])
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        assert archive.namelist() == ["project/main.py", "project/README.md"]
+        assert archive.read("project/main.py") == b"print('ok')"
+    try:
+        bot.build_zip_bytes([{"path": "../escape.py", "content": "bad"}])
+    except ValueError as exc:
+        assert "مسیر" in str(exc)
+    else:
+        raise AssertionError("ZIP path traversal was not rejected")
+
+
+def test_render_text_pdf_returns_a_valid_pdf_with_persian():
+    from pypdf import PdfReader
+
+    payload = bot.render_text_pdf("# گزارش\n\nاین یک فایل آزمایشی فارسی است.\n- نکتهٔ اول")
+    assert payload.startswith(b"%PDF")
+    assert len(PdfReader(io.BytesIO(payload)).pages) == 1
+
+
+def test_create_file_artifact_uses_selected_provider_without_running_code(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bot, "get_user_settings", lambda user_id: {"ai_provider": "gemini", "fallback_on_error": True})
+
+    async def fake_model_chat(client, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return {"choices": [{"message": {"content": "```python\nprint('hello')\n```"}}]}
+
+    monkeypatch.setattr(bot, "model_chat", fake_model_chat)
+    filename, content, mime = asyncio.run(bot.create_file_artifact(object(), 123, "فایل hello.py بساز", ".py"))
+    assert filename == "hello.py" and content == b"print('hello')" and mime == "text/x-python"
+    assert calls[0][1]["provider"] == "gemini" and calls[0][1]["fallback_on_error"] is True
+
+
+def test_send_document_uploads_file_as_telegram_document(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(bot, "TG_API", "https://telegram.test/botTOKEN")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            calls["url"] = url
+            calls.update(kwargs)
+            return FakeResponse()
+
+    asyncio.run(bot.send_document(FakeClient(), 123, "script.py", b"print(1)", "text/x-python", "ready", reply_to=9))
+    assert calls["url"].endswith("/sendDocument")
+    assert calls["data"]["reply_to_message_id"] == "9"
+    assert calls["files"]["document"] == ("script.py", b"print(1)", "text/x-python")
 
 
 def test_cloudflare_image_raw_bytes_response(monkeypatch):
