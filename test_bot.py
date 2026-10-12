@@ -819,6 +819,45 @@ def test_image_prompt_length_limit():
     assert len(bot.extract_image_prompt("تصویر " + "x" * 2100 + " بساز")) == 2048
 
 
+def test_telegram_markdown_rendering_is_styled_and_escaped():
+    text = "# عنوان\n\n- **پررنگ** و `کد` <script>\n> نکته\n[راهنما](https://example.com/a?x=1&y=2)"
+    rendered, in_code = bot.markdown_to_telegram_html(text)
+    assert rendered == (
+        "<b>عنوان</b>\n\n• <b>پررنگ</b> و <code>کد</code> &lt;script&gt;\n"
+        "│ نکته\n<a href=\"https://example.com/a?x=1&amp;y=2\">راهنما</a>"
+    )
+    assert in_code is False
+
+
+def test_telegram_code_blocks_remain_balanced_across_chunks():
+    first, state = bot.markdown_to_telegram_html("```python\nprint('<safe>')")
+    second, state = bot.markdown_to_telegram_html("```\nپایان", state)
+    assert first == "<pre><code>\nprint('&lt;safe&gt;')\n</code></pre>"
+    assert second == "<pre><code>\n</code></pre>\nپایان"
+    assert state is False
+
+
+def test_send_text_sets_html_parse_mode_and_keeps_reply_markup_on_last_chunk(monkeypatch):
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    long_text = "# عنوان\n" + "پاسخ طولانی " * 700
+    markup = {"keyboard": [[{"text": "بازگشت"}]]}
+    asyncio.run(bot.send_text(object(), 123, long_text, reply_to=7, reply_markup=markup))
+
+    assert len(calls) > 1
+    assert all(method == "sendMessage" for method, _ in calls)
+    assert all(payload["parse_mode"] == "HTML" for _, payload in calls)
+    assert all(len(payload["text"]) < 4096 for _, payload in calls)
+    assert calls[0][1]["reply_to_message_id"] == 7
+    assert "reply_to_message_id" not in calls[1][1]
+    assert "reply_markup" not in calls[0][1]
+    assert calls[-1][1]["reply_markup"] == markup
+
+
 def test_cloudflare_image_raw_bytes_response(monkeypatch):
     import httpx
 

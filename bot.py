@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import html
 import io
 import json
 import logging
@@ -575,6 +576,93 @@ async def telegram_call(client: httpx.AsyncClient, method: str, payload: dict[st
     return body.get("result")
 
 
+def split_telegram_text(text: str, limit: int = 3600) -> list[str]:
+    """Split long messages near line boundaries while staying below Telegram's limit."""
+    parts: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True) or [text]:
+        while len(line) > limit:
+            room = limit - len(current)
+            cut = line.rfind(" ", 0, room + 1) if room > 0 else -1
+            if cut < max(1, room // 2):
+                cut = room if room > 0 else limit
+            current += line[:cut]
+            parts.append(current)
+            current = ""
+            line = line[cut:]
+        if len(current) + len(line) > limit:
+            if current:
+                parts.append(current)
+            current = ""
+        current += line
+    if current or not parts:
+        parts.append(current)
+    return parts
+
+
+def markdown_to_telegram_html(text: str, inside_code_block: bool = False) -> tuple[str, bool]:
+    """Render a safe, small Markdown subset using Telegram's HTML parse mode."""
+    output: list[str] = []
+    in_code = inside_code_block
+    if in_code:
+        output.append("<pre><code>")
+
+    def inline(value: str) -> str:
+        links: list[str] = []
+
+        def save_link(match: re.Match[str]) -> str:
+            label, url = match.groups()
+            if not re.match(r"https?://", url, re.I):
+                return match.group(0)
+            token = f"\x00LINK{len(links)}\x00"
+            links.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
+            return token
+
+        value = re.sub(r"\[([^\]]+)\]\(([^\s)]+)\)", save_link, value)
+        value = html.escape(value, quote=False)
+        for index, link in enumerate(links):
+            value = value.replace(f"\x00LINK{index}\x00", link)
+        value = re.sub(r"`([^`\n]+)`", lambda m: f"<code>{m.group(1)}</code>", value)
+        value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value)
+        value = re.sub(r"__(.+?)__", r"<b>\1</b>", value)
+        return value
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                output.append("</code></pre>")
+                in_code = False
+            else:
+                output.append("<pre><code>")
+                in_code = True
+            continue
+        if in_code:
+            output.append(html.escape(line, quote=False))
+            continue
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        bullet = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
+        numbered = re.match(r"^(\s*)(\d+)[.)]\s+(.+)$", line)
+        quote = re.match(r"^\s*>\s?(.*)$", line)
+        if not stripped:
+            output.append("")
+        elif re.fullmatch(r"\s*(?:-{3,}|\*{3,}|_{3,})\s*", line):
+            output.append("────────────")
+        elif heading:
+            output.append(f"<b>{inline(heading.group(1))}</b>")
+        elif bullet:
+            output.append(f"• {inline(bullet.group(2))}")
+        elif numbered:
+            output.append(f"{numbered.group(2)}. {inline(numbered.group(3))}")
+        elif quote:
+            output.append(f"│ {inline(quote.group(1))}")
+        else:
+            output.append(inline(line))
+    if in_code:
+        output.append("</code></pre>")
+    return "\n".join(output), in_code
+
+
 async def send_text(
     client: httpx.AsyncClient,
     chat_id: int,
@@ -582,11 +670,17 @@ async def send_text(
     reply_to: int | None = None,
     reply_markup: dict[str, Any] | None = None,
 ) -> None:
-    # Telegram text limit is 4096 characters. Leave room for entities and formatting.
     text = text.strip() or "پاسخی دریافت نشد."
-    parts = [text[i:i + 3800] for i in range(0, len(text), 3800)]
+    parts = split_telegram_text(text)
+    inside_code_block = False
     for i, part in enumerate(parts):
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": part, "disable_web_page_preview": True}
+        formatted, inside_code_block = markdown_to_telegram_html(part, inside_code_block)
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": formatted,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
         if i == 0 and reply_to:
             payload["reply_to_message_id"] = reply_to
         if reply_markup is not None and i == len(parts) - 1:
