@@ -581,14 +581,14 @@ def split_telegram_text(text: str, limit: int = 3600) -> list[str]:
     parts: list[str] = []
     current = ""
     for line in text.splitlines(keepends=True) or [text]:
-        while len(line) > limit:
-            room = limit - len(current)
-            cut = line.rfind(" ", 0, room + 1) if room > 0 else -1
-            if cut < max(1, room // 2):
-                cut = room if room > 0 else limit
-            current += line[:cut]
+        if len(line) > limit and current:
             parts.append(current)
             current = ""
+        while len(line) > limit:
+            cut = line.rfind(" ", 0, limit + 1)
+            if cut < max(1, limit // 2):
+                cut = limit
+            parts.append(line[:cut])
             line = line[cut:]
         if len(current) + len(line) > limit:
             if current:

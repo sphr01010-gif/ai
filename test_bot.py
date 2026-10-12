@@ -858,6 +858,13 @@ def test_send_text_sets_html_parse_mode_and_keeps_reply_markup_on_last_chunk(mon
     assert calls[-1][1]["reply_markup"] == markup
 
 
+def test_split_telegram_text_preserves_content_and_respects_limit():
+    text = "a" * 10 + "\n" + "b" * 10 + "\n" + "c" * 25
+    parts = bot.split_telegram_text(text, limit=10)
+    assert "".join(parts) == text
+    assert all(len(part) <= 10 for part in parts)
+
+
 def test_cloudflare_image_raw_bytes_response(monkeypatch):
     import httpx
 
