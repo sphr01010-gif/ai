@@ -826,7 +826,17 @@ def test_telegram_markdown_rendering_is_styled_and_escaped():
     rendered, in_code = bot.markdown_to_telegram_html(text)
     assert rendered == (
         "<b>عنوان</b>\n\n• <b>پررنگ</b> و <code>کد</code> &lt;script&gt;\n"
-        "│ نکته\n<a href=\"https://example.com/a?x=1&amp;y=2\">راهنما</a>"
+        "<blockquote>نکته</blockquote>\n<a href=\"https://example.com/a?x=1&amp;y=2\">راهنما</a>"
+    )
+    assert in_code is False
+
+
+def test_telegram_markdown_supports_inline_emphasis_and_nested_lists():
+    text = "*مهم* ~~حذف~~ `**not bold**`\n- ریشه\n  - فرزند\n> نقل‌قول"
+    rendered, in_code = bot.markdown_to_telegram_html(text)
+    assert rendered == (
+        "<i>مهم</i> <s>حذف</s> <code>**not bold**</code>\n"
+        "• ریشه\n  ◦ فرزند\n<blockquote>نقل‌قول</blockquote>"
     )
     assert in_code is False
 
@@ -858,6 +868,21 @@ def test_send_text_sets_html_parse_mode_and_keeps_reply_markup_on_last_chunk(mon
     assert "reply_to_message_id" not in calls[1][1]
     assert "reply_markup" not in calls[0][1]
     assert calls[-1][1]["reply_markup"] == markup
+
+
+def test_with_chat_action_refreshes_indicator_and_returns_operation_result(monkeypatch):
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+
+    async def operation():
+        return "complete"
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    result = asyncio.run(bot.with_chat_action(object(), 123, "typing", operation()))
+    assert result == "complete"
+    assert calls[0] == ("sendChatAction", {"chat_id": 123, "action": "typing"})
 
 
 def test_split_telegram_text_preserves_content_and_respects_limit():
