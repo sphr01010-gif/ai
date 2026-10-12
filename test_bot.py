@@ -556,7 +556,7 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
     base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
     asyncio.run(bot.process_message(object(), {**base, "text": "انتخاب API"}))
-    assert calls[-1][1]["reply_markup"] == bot.AI_PROVIDER_MARKUP
+    assert calls[-1][1]["reply_markup"] == bot.ai_provider_markup(123)
     asyncio.run(bot.process_message(object(), {**base, "text": "Gemini"}))
     assert bot.get_user_settings(123)["ai_provider"] == "gemini"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
@@ -578,14 +578,14 @@ def test_assistant_reply_uses_the_user_selected_provider(tmp_path, monkeypatch):
     bot.set_user_setting(123, "ai_provider", "gemini")
     observed = []
 
-    async def fake_model_chat(client, messages, *, model=None, provider=None):
-        observed.append(provider)
+    async def fake_model_chat(client, messages, *, model=None, provider=None, fallback_on_error=False):
+        observed.append((provider, fallback_on_error))
         return {"choices": [{"message": {"content": "Gemini response"}}]}
 
     monkeypatch.setattr(bot, "model_chat", fake_model_chat)
     result = asyncio.run(bot.assistant_reply(object(), 123, "سلام"))
     assert result == "Gemini response"
-    assert observed == ["gemini"]
+    assert observed == [("gemini", False)]
 
 
 def test_explicit_provider_selection_does_not_fallback(monkeypatch):
@@ -638,3 +638,170 @@ def test_removed_provider_setting_migrates_to_auto(tmp_path, monkeypatch):
     settings = bot.get_user_settings(321)
     assert settings["ai_provider"] == "auto"
     assert settings["language"] == "fa"
+
+
+
+def test_gemini_retries_transient_503_then_succeeds(monkeypatch):
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "gemini-3.8-flash")
+    sleeps = []
+
+    async def no_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(bot.asyncio, "sleep", no_sleep)
+
+    class FakeResponse:
+        def __init__(self, status, body):
+            self.status_code = status
+            self.text = body
+            self.headers = {}
+
+        @staticmethod
+        def json():
+            return {"candidates": [{"content": {"parts": [{"text": "recovered"}]}}]}
+
+    class FakeClient:
+        def __init__(self):
+            self.responses = [FakeResponse(503, '{"error":"busy"}'), FakeResponse(200, "")]
+            self.calls = 0
+
+        async def post(self, url, **kwargs):
+            self.calls += 1
+            return self.responses.pop(0)
+
+    client = FakeClient()
+    result = asyncio.run(bot.gemini_chat(client, [{"role": "user", "content": "hi"}]))
+    assert result["choices"][0]["message"]["content"] == "recovered"
+    assert client.calls == 2 and len(sleeps) == 1 and sleeps[0] >= 1
+
+
+def test_explicit_provider_failover_is_opt_in(monkeypatch):
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "gemini"])
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    calls = []
+
+    async def fail_gemini(*args, **kwargs):
+        calls.append("gemini")
+        raise RuntimeError("temporary outage")
+
+    async def succeed_apmix(*args, **kwargs):
+        calls.append("apmix")
+        return {"choices": [{"message": {"content": "fallback answer"}}]}
+
+    monkeypatch.setattr(bot, "gemini_chat", fail_gemini)
+    monkeypatch.setattr(bot, "apmix_chat", succeed_apmix)
+    try:
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="gemini"))
+    except RuntimeError as exc:
+        assert "temporary outage" in str(exc)
+    else:
+        raise AssertionError("manual provider must not fail over by default")
+    assert calls == ["gemini"]
+
+    calls.clear()
+    result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="gemini", fallback_on_error=True))
+    assert result["choices"][0]["message"]["content"] == "fallback answer"
+    assert calls == ["gemini", "apmix"]
+
+
+def test_provider_fallback_toggle_persists_and_updates_button(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "fallback-toggle.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append(payload)
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "انتخاب API"}))
+    assert bot.get_user_settings(123)["fallback_on_error"] is False
+    asyncio.run(bot.process_message(object(), {**base, "text": "جایگزینی هنگام خطا: خاموش"}))
+    assert bot.get_user_settings(123)["fallback_on_error"] is True
+    assert "جایگزینی هنگام خطا: روشن" in str(calls[-1]["reply_markup"])
+
+
+def test_weather_tool_calls_open_meteo_and_labels_source_and_local_time():
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+        async def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if "geocoding" in url:
+                return FakeResponse({"results": [{"name": "شیراز", "admin1": "Fars", "country": "Iran", "latitude": 29.59, "longitude": 52.58}]})
+            return FakeResponse({"timezone": "Asia/Tehran", "current": {"time": "2026-10-12T12:00", "temperature_2m": 25, "apparent_temperature": 26, "relative_humidity_2m": 30, "precipitation": 0, "weather_code": 0, "wind_speed_10m": 8}, "daily": {"time": ["2026-10-12"], "weather_code": [0], "temperature_2m_min": [15], "temperature_2m_max": [29]}})
+
+    client = FakeClient()
+    answer = asyncio.run(bot.dispatch_api_tool(client, "هوای شیراز چطوره؟"))
+    assert len(client.calls) == 2
+    assert client.calls[0][1]["params"]["name"] == "شیراز"
+    assert "Open-Meteo" in answer and "Asia/Tehran" in answer and "29°C" in answer
+
+
+def test_currency_tool_converts_persian_amount_and_shows_rate_date():
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        @staticmethod
+        def json():
+            return {"date": "2026-10-12", "base": "USD", "quote": "EUR", "rate": 0.9}
+
+    class FakeClient:
+        def __init__(self):
+            self.url = None
+        async def get(self, url, **kwargs):
+            self.url = url
+            return FakeResponse()
+
+    client = FakeClient()
+    answer = asyncio.run(bot.dispatch_api_tool(client, "۱۰۰ دلار به یورو چند می‌شود؟"))
+    assert client.url.endswith("/v2/rate/usd/eur")
+    assert "100 USD ≈ 90 EUR" in answer
+    assert "2026-10-12" in answer and "Frankfurter" in answer and "نرخ لحظه‌ای" in answer
+
+
+def test_currency_intent_asks_for_missing_destination_instead_of_guessing():
+    answer = asyncio.run(bot.dispatch_api_tool(object(), "نرخ دلار امروز چنده؟"))
+    assert "ارز مقصد" in answer
+
+
+def test_api_tool_registry_accepts_additional_handlers():
+    async def example_tool(client, text, match):
+        return "example-result"
+    bot.register_api_tool("test-extension", __import__("re").compile("example"), example_tool)
+    try:
+        assert asyncio.run(bot.dispatch_api_tool(object(), "run example")) == "example-result"
+    finally:
+        bot.API_TOOL_REGISTRY.pop("test-extension", None)
+
+
+def test_explicit_search_prompt_separates_sourced_facts_and_analysis(monkeypatch):
+    observed = {}
+    async def fake_tavily(client, query, *, deep=False):
+        return {"results": [{"title": "Example", "url": "https://example.test", "published_date": "2026-10-10", "content": "Verified claim."}]}
+    async def fake_model_chat(client, messages, *, model=None, provider=None, fallback_on_error=False):
+        observed["prompt"] = messages[-1]["content"]
+        return {"choices": [{"message": {"content": "ok"}}]}
+    monkeypatch.setattr(bot, "tavily_search", fake_tavily)
+    monkeypatch.setattr(bot, "model_chat", fake_model_chat)
+    asyncio.run(bot.explicit_search_reply(object(), "What happened?"))
+    assert "اطلاعات منبع‌شده" in observed["prompt"] and "تحلیل" in observed["prompt"]
+    assert "2026-10-10" in observed["prompt"]
+
+
+def test_currency_pair_without_conversion_intent_does_not_call_tool():
+    answer = asyncio.run(bot.dispatch_api_tool(object(), "I like USD and EUR"))
+    assert answer is None
+
