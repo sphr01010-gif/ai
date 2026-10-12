@@ -460,10 +460,9 @@ def test_export_reminders_sends_csv_document(tmp_path, monkeypatch):
     assert b"task" in captured["files"]["document"][1]
 
 
-def test_tooken_chat_uses_configured_openai_compatible_endpoint(monkeypatch):
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
-    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+def test_gemini_chat_uses_google_generate_content_api(monkeypatch):
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "gemini-3.8-flash")
 
     class FakeResponse:
         status_code = 200
@@ -471,7 +470,7 @@ def test_tooken_chat_uses_configured_openai_compatible_endpoint(monkeypatch):
 
         @staticmethod
         def json():
-            return {"choices": [{"message": {"content": "hello from Tooken"}}]}
+            return {"candidates": [{"content": {"parts": [{"text": "hello from Gemini"}]}}]}
 
     class FakeClient:
         async def post(self, url, **kwargs):
@@ -479,35 +478,65 @@ def test_tooken_chat_uses_configured_openai_compatible_endpoint(monkeypatch):
             return FakeResponse()
 
     client = FakeClient()
-    result = asyncio.run(bot.tooken_chat(client, [{"role": "user", "content": "hi"}]))
-    assert result["choices"][0]["message"]["content"] == "hello from Tooken"
+    result = asyncio.run(bot.gemini_chat(client, [
+        {"role": "system", "content": "Be helpful"},
+        {"role": "user", "content": "hi"},
+    ]))
+    assert result["choices"][0]["message"]["content"] == "hello from Gemini"
     url, kwargs = client.call
-    assert url == "https://api.example.test/v1/chat/completions"
-    assert kwargs["headers"]["Authorization"] == "Bearer tooken-test-key"
-    assert kwargs["json"]["model"] == "test-model"
+    assert url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+    assert kwargs["headers"]["x-goog-api-key"] == "gemini-test-key"
+    assert kwargs["json"]["system_instruction"]["parts"][0]["text"] == "Be helpful"
+    assert kwargs["json"]["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
 
 
-def test_model_chat_falls_back_from_apmix_to_tooken(monkeypatch):
-    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "tooken"])
+def test_gemini_chat_converts_inline_image_to_google_part(monkeypatch):
+    import base64
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "gemini-3.8-flash")
+    image = base64.b64encode(b"fake-image").decode("ascii")
+
+    class FakeResponse:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"candidates": [{"content": {"parts": [{"text": "image seen"}]}}]}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            self.payload = kwargs["json"]
+            return FakeResponse()
+
+    client = FakeClient()
+    asyncio.run(bot.gemini_chat(client, [{"role": "user", "content": [
+        {"type": "text", "text": "Describe"},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}},
+    ]}]))
+    parts = client.payload["contents"][0]["parts"]
+    assert parts[0] == {"text": "Describe"}
+    assert parts[1] == {"inline_data": {"mime_type": "image/jpeg", "data": image}}
+
+
+def test_model_chat_falls_back_from_apmix_to_gemini(monkeypatch):
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "gemini"])
     monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
-    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "test-model")
     calls = []
 
     async def fail_apmix(*args, **kwargs):
         calls.append("apmix")
         raise RuntimeError("temporary provider failure")
 
-    async def succeed_tooken(*args, **kwargs):
-        calls.append("tooken")
+    async def succeed_gemini(*args, **kwargs):
+        calls.append("gemini")
         return {"choices": [{"message": {"content": "fallback worked"}}]}
 
     monkeypatch.setattr(bot, "apmix_chat", fail_apmix)
-    monkeypatch.setattr(bot, "tooken_chat", succeed_tooken)
+    monkeypatch.setattr(bot, "gemini_chat", succeed_gemini)
     result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}]))
     assert result["choices"][0]["message"]["content"] == "fallback worked"
-    assert calls == ["apmix", "tooken"]
+    assert calls == ["apmix", "gemini"]
 
 
 
@@ -515,9 +544,8 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "provider-selection.sqlite3")
     monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
     monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
-    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "test-model")
     bot.init_db()
     calls = []
 
@@ -529,8 +557,8 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
     asyncio.run(bot.process_message(object(), {**base, "text": "انتخاب API"}))
     assert calls[-1][1]["reply_markup"] == bot.AI_PROVIDER_MARKUP
-    asyncio.run(bot.process_message(object(), {**base, "text": "Tooken"}))
-    assert bot.get_user_settings(123)["ai_provider"] == "tooken"
+    asyncio.run(bot.process_message(object(), {**base, "text": "Gemini"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "gemini"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
     asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
@@ -538,68 +566,75 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     asyncio.run(bot.process_message(object(), {**base, "text": "خودکار"}))
     assert bot.get_user_settings(123)["ai_provider"] == "auto"
 
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "")
-    asyncio.run(bot.process_message(object(), {**base, "text": "Tooken"}))
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "")
+    asyncio.run(bot.process_message(object(), {**base, "text": "Gemini"}))
     assert bot.get_user_settings(123)["ai_provider"] == "auto"
-    assert "TOOKEN_API_KEY" in calls[-1][1]["text"]
+    assert "GEMINI_API_KEY" in calls[-1][1]["text"]
 
 
 def test_assistant_reply_uses_the_user_selected_provider(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DB_PATH", tmp_path / "provider-chat.sqlite3")
     bot.init_db()
-    bot.set_user_setting(123, "ai_provider", "tooken")
+    bot.set_user_setting(123, "ai_provider", "gemini")
     observed = []
 
     async def fake_model_chat(client, messages, *, model=None, provider=None):
         observed.append(provider)
-        return {"choices": [{"message": {"content": "Tooken response"}}]}
+        return {"choices": [{"message": {"content": "Gemini response"}}]}
 
     monkeypatch.setattr(bot, "model_chat", fake_model_chat)
     result = asyncio.run(bot.assistant_reply(object(), 123, "سلام"))
-    assert result == "Tooken response"
-    assert observed == ["tooken"]
+    assert result == "Gemini response"
+    assert observed == ["gemini"]
 
 
 def test_explicit_provider_selection_does_not_fallback(monkeypatch):
-    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "tooken"])
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["apmix", "gemini"])
     monkeypatch.setattr(bot, "APMIX_API_KEY", "apmix-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "tooken-test-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
-    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "test-model")
     calls = []
 
     async def unexpected_apmix(*args, **kwargs):
         calls.append("apmix")
-        raise AssertionError("selected Tooken must not call APMIX")
+        raise AssertionError("selected Gemini must not call APMIX")
 
-    async def succeed_tooken(*args, **kwargs):
-        calls.append("tooken")
-        return {"choices": [{"message": {"content": "selected Tooken"}}]}
+    async def succeed_gemini(*args, **kwargs):
+        calls.append("gemini")
+        return {"choices": [{"message": {"content": "selected Gemini"}}]}
 
     monkeypatch.setattr(bot, "apmix_chat", unexpected_apmix)
-    monkeypatch.setattr(bot, "tooken_chat", succeed_tooken)
-    result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="tooken"))
-    assert result["choices"][0]["message"]["content"] == "selected Tooken"
-    assert calls == ["tooken"]
+    monkeypatch.setattr(bot, "gemini_chat", succeed_gemini)
+    result = asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="gemini"))
+    assert result["choices"][0]["message"]["content"] == "selected Gemini"
+    assert calls == ["gemini"]
 
 
 def test_provider_errors_show_actionable_details_without_leaking_keys(monkeypatch):
-    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["tooken"])
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["gemini"])
     monkeypatch.setattr(bot, "APMIX_API_KEY", "")
-    monkeypatch.setattr(bot, "TOOKEN_API_KEY", "super-secret-tooken-key")
-    monkeypatch.setattr(bot, "TOOKEN_API_BASE_URL", "https://api.example.test/v1")
-    monkeypatch.setattr(bot, "TOOKEN_MODEL", "test-model")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "super-secret-gemini-key")
+    monkeypatch.setattr(bot, "GEMINI_MODEL", "test-model")
 
-    async def fail_tooken(*args, **kwargs):
-        raise RuntimeError("Tooken API HTTP 401: invalid key super-secret-tooken-key")
+    async def fail_gemini(*args, **kwargs):
+        raise RuntimeError("Gemini API HTTP 401: invalid key super-secret-gemini-key")
 
-    monkeypatch.setattr(bot, "tooken_chat", fail_tooken)
+    monkeypatch.setattr(bot, "gemini_chat", fail_gemini)
     try:
-        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="tooken"))
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="gemini"))
     except RuntimeError as exc:
         assert "HTTP 401" in str(exc)
         assert "invalid key" in str(exc)
-        assert "super-secret-tooken-key" not in str(exc)
+        assert "super-secret-gemini-key" not in str(exc)
         assert "[REDACTED]" in str(exc)
     else:
         raise AssertionError("provider failure should be surfaced")
+
+
+def test_removed_provider_setting_migrates_to_auto(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "legacy-provider-setting.sqlite3")
+    bot.init_db()
+    bot.save_user_settings(321, {"ai_provider": "tooken", "language": "fa"})
+    settings = bot.get_user_settings(321)
+    assert settings["ai_provider"] == "auto"
+    assert settings["language"] == "fa"
