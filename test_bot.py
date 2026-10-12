@@ -791,6 +791,7 @@ def test_api_tool_registry_accepts_additional_handlers():
 
 def test_explicit_search_prompt_separates_sourced_facts_and_analysis(monkeypatch):
     observed = {}
+    monkeypatch.setattr(bot, "TAVILY_API_KEY", "test-key")
     async def fake_tavily(client, query, *, deep=False):
         return {"results": [{"title": "Example", "url": "https://example.test", "published_date": "2026-10-10", "content": "Verified claim."}]}
     async def fake_model_chat(client, messages, *, model=None, provider=None, fallback_on_error=False):
@@ -801,6 +802,27 @@ def test_explicit_search_prompt_separates_sourced_facts_and_analysis(monkeypatch
     asyncio.run(bot.explicit_search_reply(object(), "What happened?"))
     assert "اطلاعات منبع‌شده" in observed["prompt"] and "تحلیل" in observed["prompt"]
     assert "2026-10-10" in observed["prompt"]
+
+
+def test_explicit_search_without_tavily_key_gives_persian_setup_steps(monkeypatch):
+    monkeypatch.setattr(bot, "TAVILY_API_KEY", "")
+    answer = asyncio.run(bot.explicit_search_reply(object(), "weather today"))
+    assert "جست‌وجوی وب هنوز پیکربندی نشده است" in answer
+    assert "TAVILY_API_KEY" in answer and "Railway" in answer and "Deploy" in answer
+    assert "Web search is not configured" not in answer
+    assert "کلید را در تلگرام" in answer
+
+
+def test_explicit_search_with_no_results_does_not_claim_key_missing(monkeypatch):
+    monkeypatch.setattr(bot, "TAVILY_API_KEY", "test-key")
+
+    async def fake_tavily(client, query, *, deep=False):
+        return {"results": []}
+
+    monkeypatch.setattr(bot, "tavily_search", fake_tavily)
+    answer = asyncio.run(bot.explicit_search_reply(object(), "obscure query"))
+    assert "برای این عبارت نتیجه‌ای پیدا نشد" in answer
+    assert "پیکربندی نشده" not in answer
 
 
 def test_currency_pair_without_conversion_intent_does_not_call_tool():

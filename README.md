@@ -71,7 +71,7 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 - `GEMINI_API_KEY` — کلید Google AI Studio؛ فقط در Railway Variables وارد شود.
 - `GEMINI_MODEL` — شناسهٔ مدل Gemini؛ پیش‌فرض `gemini-3.8-flash`.
 - `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback در حالت خودکار؛ پیش‌فرض `apmix,gemini`، برای اولویت Gemini مقدار `gemini,apmix` بگذار. در حالت انتخاب دستی fallback را از دکمهٔ «انتخاب API» کنترل کن.
-- `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. بدون آن گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب غیرفعال است.
+- `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. برای فعال‌سازی، کلید را از داشبورد Tavily بساز و با همین نام دقیق در Railway → Service → **Variables** اضافه کن؛ سپس سرویس را redeploy کن. تا آن زمان گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب اجرا نمی‌شود. کلید را در چت یا GitHub نفرست.
 - `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` — اختیاری؛ برای ساخت تصویر با Cloudflare Workers AI. این token جدا از کلیدهای APMIX و Gemini است.
 - `TIMEZONE` — منطقهٔ زمانی؛ پیش‌فرض `Asia/Tehran`.
 - `BOT_DATA_DIR` — در Railway مقدار `/data`.

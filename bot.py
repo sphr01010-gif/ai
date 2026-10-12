@@ -1301,10 +1301,19 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
 
 async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compare: bool = False) -> str:
     """Search the web and return source-linked answers, optionally comparing sources."""
+    if not TAVILY_API_KEY:
+        return (
+            "جست‌وجوی وب هنوز پیکربندی نشده است؛ متغیر `TAVILY_API_KEY` در محیط ربات خالی است.\n\n"
+            "برای فعال‌سازی، در داشبورد Tavily یک کلید بساز، سپس در Railway → پروژه → سرویس → "
+            "Variables متغیری با نام دقیق `TAVILY_API_KEY` اضافه کن و سرویس را دوباره Deploy کن.\n\n"
+            "کلید را در تلگرام، گفتگو یا GitHub نفرست."
+        )
     result = await tavily_search(client, query, deep=compare)
     results = result.get("results", [])
     if not results:
-        return "جست‌وجوی وب نتیجه‌ای نداشت یا هنوز پیکربندی نشده است. " + str(result.get("error", ""))
+        if result.get("error"):
+            return "سرویس جست‌وجوی وب فعلاً پاسخ معتبری نداد؛ کمی بعد دوباره امتحان کن."
+        return "برای این عبارت نتیجه‌ای پیدا نشد. پرسش را دقیق‌تر یا با واژه‌های دیگری بفرست."
     sources = "\n".join(
         f"[{i}] {item.get('title', '')} ({item.get('published_date') or 'date unavailable'}) ({item.get('url', '')}): {item.get('content', '')}"
         for i, item in enumerate(results[:8], 1)
