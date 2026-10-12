@@ -1,6 +1,6 @@
 # دستیار هوش مصنوعی شخصی تلگرام
 
-بات خصوصی مبتنی بر Python برای گفت‌وگوی فارسی/چندزبانه و جست‌وجوی وب. اتصال APMIX و Tooken Club (اختیاری) همراه با fallback خودکار پشتیبانی می‌شود؛ Tavily برای جست‌وجوی وب و Telegram Bot API برای انتقال پیام‌ها استفاده می‌شود.
+بات خصوصی مبتنی بر Python برای گفت‌وگوی فارسی/چندزبانه و جست‌وجوی وب. اتصال APMIX و Google Gemini API (اختیاری) همراه با fallback خودکار پشتیبانی می‌شود؛ Tavily برای جست‌وجوی وب و Telegram Bot API برای انتقال پیام‌ها استفاده می‌شود.
 
 بات با polling اجرا می‌شود و به دامنه یا webhook نیاز ندارد. پردازش پیام‌ها به شناسهٔ عددی یک کاربر و گفت‌وگوی خصوصی محدود است.
 
@@ -10,9 +10,13 @@
 
 - **گفت‌وگو:** متن دلخواهت را بفرست.
 - **جست‌وجوی وب:** پرسشت را بفرست تا پاسخ همراه منبع بگیری.
-- **انتخاب API:** برای چت APMIX، Tooken یا «خودکار» را انتخاب کن. انتخاب برای حساب تلگرامی تو ذخیره می‌شود؛ در حالت انتخاب دستی، بات فقط از همان ارائه‌دهنده استفاده می‌کند و در صورت خطا خودکار به دیگری نمی‌رود.
+- **انتخاب API:** برای چت APMIX، Gemini یا «خودکار» را انتخاب کن. انتخاب برای حساب تلگرامی تو ذخیره می‌شود؛ در حالت انتخاب دستی، بات فقط از همان ارائه‌دهنده استفاده می‌کند و در صورت خطا خودکار به دیگری نمی‌رود.
 
 گزینه‌های قبلی از منوی فعال حذف شده‌اند و حالت‌های نیمه‌تمام آن‌ها پس از دریافت پیام پاک می‌شوند. ارسال‌های زمان‌بندی‌شدهٔ یادآوری و خلاصه غیرفعال‌اند. داده‌های قدیمی داخل SQLite عمداً پاک نشده‌اند.
+
+## ساخت کلید Google Gemini
+
+از [Google AI Studio API keys](https://aistudio.google.com/api-keys) یک کلید Gemini بساز و مقدارش را فقط در Railway Variables با نام `GEMINI_API_KEY` ثبت کن؛ کلید را در GitHub یا گفت‌وگوها قرار نده. مدل پیش‌فرض `gemini-3.8-flash` است و می‌توانی آن را با `GEMINI_MODEL` تغییر دهی. کد از REST `generateContent` رسمی Gemini استفاده می‌کند.
 
 ## ساخت کلید APMIX
 
@@ -37,10 +41,9 @@
 - `TELEGRAM_ALLOWED_USER_ID` — شناسهٔ عددی حساب تلگرامی مجاز.
 - `APMIX_API_KEY` — کلید داشبورد APMIX.
 - `APMIX_MODEL` — شناسهٔ مدل مجاز APMIX؛ پیش‌فرض `claude-sonnet-4-6-free`.
-- `TOOKEN_API_KEY` — کلید API حساب Tooken؛ فقط در Railway Variables وارد شود.
-- `TOOKEN_API_BASE_URL` — آدرس پایهٔ سازگار با OpenAI از داشبورد/مستندات Tooken؛ آن را حدس نزن.
-- `TOOKEN_MODEL` — شناسهٔ دقیق مدل مجاز در Tooken.
-- `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback؛ پیش‌فرض `apmix,tooken`، برای اولویت Tooken مقدار `tooken,apmix` بگذار.
+- `GEMINI_API_KEY` — کلید Google AI Studio؛ فقط در Railway Variables وارد شود.
+- `GEMINI_MODEL` — شناسهٔ مدل Gemini؛ پیش‌فرض `gemini-3.8-flash`.
+- `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback؛ پیش‌فرض `apmix,gemini`، برای اولویت Gemini مقدار `gemini,apmix` بگذار.
 - `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. بدون آن گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب غیرفعال است.
 - `TIMEZONE` — منطقهٔ زمانی؛ پیش‌فرض `Asia/Tehran`.
 - `BOT_DATA_DIR` — در Railway مقدار `/data`.
@@ -76,7 +79,7 @@ python bot.py
 
 ## منابع رسمی
 
-- [Tooken Club](https://tooken.club/)
+- [Google Gemini API](https://Gemini.club/)
 - [APMIX API Docs](https://apmix.ai/docs)
 - [APMIX Models](https://apmix.ai/models)
 - [APMIX Pricing](https://apmix.ai/pricing)
