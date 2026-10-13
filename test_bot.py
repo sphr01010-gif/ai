@@ -867,7 +867,10 @@ def test_commons_find_image_downloads_and_returns_attribution():
         async def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
             if url.endswith("api.php"):
-                assert kwargs["params"]["gsrnamespace"] == 6
+                params = kwargs["params"]
+                if params.get("list") == "search":
+                    assert params["srnamespace"] == 6 and params["srsort"] == "relevance"
+                    return FakeResponse({"query": {"search": [{"title": "File:Horse.jpg"}]}})
                 return FakeResponse({"query": {"pages": {"12": {"title": "File:Horse.jpg", "imageinfo": [{
                     "thumburl": "https://upload.wikimedia.org/horse.jpg",
                     "descriptionurl": "https://commons.wikimedia.org/wiki/File:Horse.jpg",
@@ -882,7 +885,7 @@ def test_commons_find_image_downloads_and_returns_attribution():
     assert result["artist"] == "Jane Doe"
     assert result["license"] == "CC BY-SA 4.0"
     assert result["source_url"].startswith("https://commons.wikimedia.org/")
-    assert len(client.calls) == 2
+    assert len(client.calls) == 3
 
 
 def test_commons_image_falls_back_to_remote_url_when_download_is_forbidden():
@@ -898,6 +901,8 @@ def test_commons_image_falls_back_to_remote_url_when_download_is_forbidden():
     class FakeClient:
         async def get(self, url, **kwargs):
             if url.endswith("api.php"):
+                if kwargs["params"].get("list") == "search":
+                    return FakeResponse({"query": {"search": [{"title": "File:Horse.png"}]}})
                 return FakeResponse({"query": {"pages": {"1": {"title": "File:Horse.png", "imageinfo": [{
                     "thumburl": "https://upload.wikimedia.org/thumb/Horse.png",
                     "url": "https://upload.wikimedia.org/Horse.png",
@@ -909,6 +914,37 @@ def test_commons_image_falls_back_to_remote_url_when_download_is_forbidden():
     assert result["bytes"] is None
     assert result["remote_url"] == "https://upload.wikimedia.org/thumb/Horse.png"
     assert result["content_type"] == "image/png"
+
+
+def test_commons_preserves_search_relevance_and_skips_animated_files():
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "image/jpeg"}
+        content = b"jpeg"
+        def __init__(self, body):
+            self.body = body
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        async def get(self, url, **kwargs):
+            if not url.endswith("api.php"):
+                return FakeResponse({})
+            params = kwargs["params"]
+            if params.get("list") == "search":
+                return FakeResponse({"query": {"search": [
+                    {"title": "File:Horse-animated.gif"}, {"title": "File:Horse-in-field.jpg"},
+                ]}})
+            return FakeResponse({"query": {"pages": {
+                "2": {"title": "File:Horse-in-field.jpg", "imageinfo": [{"thumburl": "https://upload.wikimedia.org/horse.jpg"}]},
+                "1": {"title": "File:Horse-animated.gif", "imageinfo": [{"thumburl": "https://upload.wikimedia.org/horse.gif"}]},
+            }}})
+
+    result = asyncio.run(bot.commons_find_image(FakeClient(), "horse"))
+    assert result["title"] == "Horse-in-field.jpg"
+    assert result["bytes"] == b"jpeg"
 
 
 def test_send_photo_accepts_remote_https_url(monkeypatch):

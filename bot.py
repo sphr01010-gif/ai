@@ -1774,20 +1774,39 @@ def _commons_plain_text(value: Any) -> str:
 
 async def commons_find_image(client: httpx.AsyncClient, query: str) -> dict[str, Any] | None:
     """Find and download one Commons image, returning attribution and license metadata."""
+    headers = {"User-Agent": "PrivateTelegramAssistant/1.0 (image search; contact repository owner)"}
     response = await client.get(
         "https://commons.wikimedia.org/w/api.php",
         params={
-            "action": "query", "format": "json", "generator": "search",
-            "gsrsearch": query[:180], "gsrnamespace": 6, "gsrlimit": 8,
-            "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": 1200,
+            "action": "query", "format": "json", "list": "search",
+            "srsearch": query[:180], "srnamespace": 6, "srlimit": 20,
+            "srwhat": "text", "srsort": "relevance",
         },
-        headers={"User-Agent": "PrivateTelegramAssistant/1.0 (image search; contact repository owner)"},
+        headers=headers,
         timeout=25,
     )
     response.raise_for_status()
-    pages = (response.json().get("query", {}).get("pages", {}) or {}).values()
+    search_results = response.json().get("query", {}).get("search", [])
+    titles = [item.get("title") for item in search_results if item.get("title")]
+    if not titles:
+        return None
+    metadata_response = await client.get(
+        "https://commons.wikimedia.org/w/api.php",
+        params={
+            "action": "query", "format": "json", "titles": "|".join(titles),
+            "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": 1200,
+        },
+        headers=headers,
+        timeout=25,
+    )
+    metadata_response.raise_for_status()
+    unordered_pages = metadata_response.json().get("query", {}).get("pages", {}) or {}
+    pages_by_title = {page.get("title"): page for page in unordered_pages.values()}
+    pages = [pages_by_title[title] for title in titles if title in pages_by_title]
     remote_fallback: dict[str, Any] | None = None
     for page in pages:
+        if re.search(r"\.(?:gif|svg|webm|mp4|tif|tiff)$", page.get("title", ""), re.I):
+            continue
         info_list = page.get("imageinfo") or []
         if not info_list:
             continue
