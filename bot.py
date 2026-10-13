@@ -14,6 +14,7 @@ import random
 import re
 import sqlite3
 import time
+from urllib.parse import urlsplit
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -659,10 +660,24 @@ def markdown_to_telegram_html(text: str, inside_code_block: bool = False) -> tup
             label, url = match.groups()
             if not re.match(r"https?://", url, re.I):
                 return match.group(0)
-            safe_label = inline(label)
+            is_raw_url = label.strip() == url.strip()
+            visible_label = (urlsplit(url).hostname or label) if is_raw_url else label
+            safe_label = inline(visible_label)
+            if is_raw_url:
+                safe_label = "\u2068" + safe_label + "\u2069"
             return protect(f'<a href="{html.escape(url, quote=True)}">{safe_label}</a>')
 
         value = re.sub(r"\[([^\]]+)\]\(([^\s)]+)\)", save_link, value)
+
+        def save_bare_url(match: re.Match[str]) -> str:
+            original = match.group(0)
+            url = original.rstrip(".,;:!?؟،؛")
+            suffix = original[len(url):]
+            host = urlsplit(url).hostname or "پیوند"
+            link = protect(f'<a href="{html.escape(url, quote=True)}">\u2068{html.escape(host)}\u2069</a>')
+            return link + suffix
+
+        value = re.sub(r"https?://[^\s<>()]+", save_bare_url, value, flags=re.I)
         value = html.escape(value, quote=False)
         value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value)
         value = re.sub(r"__(.+?)__", r"<b>\1</b>", value)
@@ -740,20 +755,30 @@ async def send_text(
 async def send_photo(
     client: httpx.AsyncClient,
     chat_id: int,
-    image: bytes,
+    image: bytes | str,
     caption: str = "تصویر ساخته شد.",
     reply_to: int | None = None,
     reply_markup: dict[str, Any] | None = None,
+    *,
+    filename: str = "flux-image.jpg",
+    content_type: str = "image/jpeg",
+    parse_mode: str | None = None,
 ) -> None:
     data: dict[str, str] = {"chat_id": str(chat_id), "caption": caption[:1024]}
+    if parse_mode:
+        data["parse_mode"] = parse_mode
     if reply_to:
         data["reply_to_message_id"] = str(reply_to)
     if reply_markup is not None:
         data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    if isinstance(image, str):
+        data["photo"] = image
+        await telegram_call(client, "sendPhoto", data)
+        return
     response = await client.post(
         f"{TG_API}/sendPhoto",
         data=data,
-        files={"photo": ("flux-image.jpg", image, "image/jpeg")},
+        files={"photo": (filename, image, content_type)},
         timeout=70,
     )
     response.raise_for_status()
@@ -1315,15 +1340,15 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compar
             return "سرویس جست‌وجوی وب فعلاً پاسخ معتبری نداد؛ کمی بعد دوباره امتحان کن."
         return "برای این عبارت نتیجه‌ای پیدا نشد. پرسش را دقیق‌تر یا با واژه‌های دیگری بفرست."
     sources = "\n".join(
-        f"[{i}] {item.get('title', '')} ({item.get('published_date') or 'date unavailable'}) ({item.get('url', '')}): {item.get('content', '')}"
-        for i, item in enumerate(results[:8], 1)
+        f"[{i}] {item.get('title', '')} ({item.get('published_date') or 'تاریخ انتشار نامشخص'}): {item.get('content', '')}"
+        for i, item in enumerate(results[:5], 1)
     )
     instruction = (
-        "Compare the sources: explain where they agree and differ, note publication dates when available, and flag conflicts. "
+        "Compare the sources briefly: explain their main agreement or disagreement, note dates when available, and flag conflicts. "
         if compare else "Answer the user's request using the search results. "
     )
     prompt = (
-        instruction + "Format the answer under two clear Persian headings: اطلاعات منبع‌شده (only claims supported by results, with citations and dates) and تحلیل (your clearly labeled reasoning). Cite factual claims with [1], [2], etc. Do not invent facts or treat snippets as definitive; state when publication dates are unavailable.\n\n"
+        instruction + "Write concise Persian suitable for a narrow phone screen: at most 2 short paragraphs under each of these two headings: اطلاعات منبع‌شده (claims supported by results) and تحلیل (clearly labeled reasoning). Cite factual claims as [1], [2], etc. Do not repeat a bibliography or URLs; the application adds a compact source list. Do not invent facts or treat snippets as definitive. State date uncertainty briefly only when relevant.\n\n"
         f"User request: {query}\n\nSearch results:\n{sources}"
     )
     response = await model_chat(client, [
@@ -1331,9 +1356,11 @@ async def explicit_search_reply(client: httpx.AsyncClient, query: str, *, compar
         {"role": "user", "content": prompt},
     ])
     answer = response["choices"][0]["message"].get("content") or "نتوانستم نتایج جست‌وجو را خلاصه کنم."
-    refs = "\n\nمنابع:\n" + "\n".join(
-        f"[{i}] {item.get('title') or item.get('url')} — {item.get('url')}" + (f" ({item.get('published_date')})" if item.get("published_date") else " (تاریخ انتشار موجود نیست)")
-        for i, item in enumerate(results[:8], 1)
+    refs = "\n\n## منابع\n" + "\n".join(
+        f"[{i}] [{item.get('title') or 'صفحهٔ منبع'}]({item.get('url')})"
+        + (f" — {item.get('published_date')}" if item.get("published_date") else "")
+        for i, item in enumerate(results[:5], 1)
+        if re.match(r"^https?://", item.get("url", ""), re.I)
     )
     return str(answer) + refs
 
@@ -1719,6 +1746,103 @@ def extract_image_prompt(text: str) -> str | None:
     return prompt[:2048] if prompt else None
 
 
+IMAGE_SEARCH_ACTION_RE = re.compile(
+    r"(?is)(?:پیدا\s*کن|جست[‌-]?وجو\s*کن|بگرد|دانلود\s*کن|بفرست|ارسال\s*کن|find|search|download|get|send)"
+)
+
+
+def extract_image_search_query(text: str) -> str | None:
+    """Recognize a request to find and send a real online photo, not generate one."""
+    raw = text.strip()
+    if not raw or not re.search(r"(?i)(?:عکس|تصویر|photo|image|picture)", raw) or not IMAGE_SEARCH_ACTION_RE.search(raw):
+        return None
+    query = re.sub(r"(?is)^.*?(?:عکس|تصویر|photo|image|picture)\s*(?:(?:از|of)\s*)?", "", raw, count=1)
+    query = re.split(IMAGE_SEARCH_ACTION_RE, query, maxsplit=1)[0]
+    query = re.sub(r"(?i)\b(?:از\s*)?(?:توی\s*)?(?:اینترنت|وب|online|internet|web)\b", " ", query)
+    query = re.sub(r"(?i)\b(?:برام|برای\s*من|لطفا|لطفاً|please|for\s+me)\b", " ", query)
+    query = re.sub(r"(?i)\b(?:یک|یه|a|an|the)\b", " ", query)
+    query = re.sub(r"(?i)^.*?\b(?:عکس|تصویر|photo|image|picture)\b\s*", "", query)
+    query = re.sub(r"\s+", " ", query).strip(" \t\r\n:،,؛;.!؟?-")
+    return query[:180] if query else None
+
+
+def _commons_plain_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("value", "")
+    return html.unescape(re.sub(r"<[^>]*>", "", str(value or ""))).strip()
+
+
+async def commons_find_image(client: httpx.AsyncClient, query: str) -> dict[str, Any] | None:
+    """Find and download one Commons image, returning attribution and license metadata."""
+    response = await client.get(
+        "https://commons.wikimedia.org/w/api.php",
+        params={
+            "action": "query", "format": "json", "generator": "search",
+            "gsrsearch": query[:180], "gsrnamespace": 6, "gsrlimit": 8,
+            "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": 1200,
+        },
+        headers={"User-Agent": "PrivateTelegramAssistant/1.0 (image search; contact repository owner)"},
+        timeout=25,
+    )
+    response.raise_for_status()
+    pages = (response.json().get("query", {}).get("pages", {}) or {}).values()
+    remote_fallback: dict[str, Any] | None = None
+    for page in pages:
+        info_list = page.get("imageinfo") or []
+        if not info_list:
+            continue
+        info = info_list[0]
+        thumbnail_url = info.get("thumburl") or info.get("url")
+        image_urls = list(dict.fromkeys(url for url in (thumbnail_url, info.get("url")) if url))
+        source_url = info.get("descriptionurl") or "https://commons.wikimedia.org/wiki/" + str(page.get("title", "")).replace(" ", "_")
+        metadata = info.get("extmetadata") or {}
+        title = _commons_plain_text(page.get("title", "تصویر")).removeprefix("File:")
+        attribution = {
+            "title": title,
+            "artist": _commons_plain_text(metadata.get("Artist") or metadata.get("Credit")),
+            "license": _commons_plain_text(metadata.get("LicenseShortName")),
+            "source_url": source_url,
+        }
+        if thumbnail_url and thumbnail_url.startswith("https://"):
+            path = urlsplit(thumbnail_url).path.lower()
+            ext, content_type = (
+                (".png", "image/png") if path.endswith(".png") else
+                (".webp", "image/webp") if path.endswith(".webp") else
+                (".jpg", "image/jpeg") if path.endswith((".jpg", ".jpeg")) else
+                ("", "")
+            )
+            if ext:
+                remote_fallback = {**attribution, "bytes": None, "remote_url": thumbnail_url, "filename": "commons-image" + ext, "content_type": content_type}
+        image_response = None
+        for image_url in image_urls:
+            if not image_url.startswith("https://"):
+                continue
+            try:
+                candidate = await client.get(image_url, timeout=35, follow_redirects=True)
+            except httpx.RequestError:
+                continue
+            if candidate.status_code >= 400:
+                continue
+            image_response = candidate
+            break
+        if image_response is None:
+            continue
+        content_type = image_response.headers.get("content-type", "image/jpeg").split(";", 1)[0].lower()
+        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            continue
+        data = image_response.content
+        if not data or len(data) > 10 * 1024 * 1024:
+            continue
+        ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[content_type]
+        return {
+            "bytes": data,
+            "filename": "commons-image" + ext,
+            "content_type": content_type,
+            **attribution,
+        }
+    return remote_fallback
+
+
 async def cloudflare_generate_image(client: httpx.AsyncClient, prompt: str) -> bytes:
     """Generate one image through Cloudflare Workers AI FLUX.1 [schnell]."""
     if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
@@ -1858,6 +1982,30 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     if pending_action == "chat" and message.get("text"):
         set_user_state(user_id, None)
     try:
+        image_search_query = extract_image_search_query(text) if message.get("text") and pending_action != "await_image_prompt" else None
+        if image_search_query:
+            image_result = await with_chat_action(client, chat_id, "typing", commons_find_image(client, image_search_query))
+            if not image_result:
+                await send_text(client, chat_id, "از Wikimedia Commons تصویر مناسبی پیدا نکردم؛ موضوع را دقیق‌تر یا به انگلیسی بفرست.", reply_to, MAIN_MENU_MARKUP)
+                return
+            attribution = [f"<b>{html.escape(image_result['title'])}</b>"]
+            if image_result.get("artist"):
+                attribution.append("عکاس/سازنده: " + html.escape(image_result["artist"]))
+            if image_result.get("license"):
+                attribution.append("مجوز: " + html.escape(image_result["license"]))
+            attribution.append(f'<a href="{html.escape(image_result["source_url"], quote=True)}">صفحهٔ منبع</a>')
+            caption = "\n".join(attribution)
+            await with_chat_action(
+                client,
+                chat_id,
+                "upload_photo",
+                send_photo(
+                    client, chat_id, image_result.get("bytes") or image_result["remote_url"], caption, reply_to, MAIN_MENU_MARKUP,
+                    filename=image_result["filename"], content_type=image_result["content_type"], parse_mode="HTML",
+                ),
+            )
+            return
+
         image_prompt = text.strip() if pending_action == "await_image_prompt" else (extract_image_prompt(text) if message.get("text") else None)
         if image_prompt is not None:
             if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:

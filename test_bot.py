@@ -843,6 +843,92 @@ def test_image_prompt_length_limit():
     assert len(bot.extract_image_prompt("تصویر " + "x" * 2100 + " بساز")) == 2048
 
 
+def test_image_search_query_extracts_subject_without_generation_intent():
+    request = "عکس یک اسب از توی اینترنت برام پیدا کن و دانلود کن و توی چت بفرست"
+    assert bot.extract_image_search_query(request) == "اسب"
+    assert bot.extract_image_search_query("از وب یک تصویر از کوه پیدا کن و بفرست") == "کوه"
+    assert bot.extract_image_search_query("عکس بساز از اسب") is None
+    assert bot.extract_image_search_query("یک عکس اسب") is None
+
+
+def test_commons_find_image_downloads_and_returns_attribution():
+    class FakeResponse:
+        def __init__(self, body=None, content=b"", headers=None):
+            self.body, self.content, self.headers = body, content, headers or {}
+            self.status_code = 200
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+        async def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("api.php"):
+                assert kwargs["params"]["gsrnamespace"] == 6
+                return FakeResponse({"query": {"pages": {"12": {"title": "File:Horse.jpg", "imageinfo": [{
+                    "thumburl": "https://upload.wikimedia.org/horse.jpg",
+                    "descriptionurl": "https://commons.wikimedia.org/wiki/File:Horse.jpg",
+                    "extmetadata": {"Artist": {"value": "<a>Jane Doe</a>"}, "LicenseShortName": {"value": "CC BY-SA 4.0"}},
+                }]}}}})
+            return FakeResponse(content=b"image-bytes", headers={"content-type": "image/jpeg"})
+
+    client = FakeClient()
+    result = asyncio.run(bot.commons_find_image(client, "horse"))
+    assert result["bytes"] == b"image-bytes"
+    assert result["title"] == "Horse.jpg"
+    assert result["artist"] == "Jane Doe"
+    assert result["license"] == "CC BY-SA 4.0"
+    assert result["source_url"].startswith("https://commons.wikimedia.org/")
+    assert len(client.calls) == 2
+
+
+def test_commons_image_falls_back_to_remote_url_when_download_is_forbidden():
+    class FakeResponse:
+        def __init__(self, body=None, status=200):
+            self.body, self.status_code = body, status
+            self.headers, self.content = {}, b""
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        async def get(self, url, **kwargs):
+            if url.endswith("api.php"):
+                return FakeResponse({"query": {"pages": {"1": {"title": "File:Horse.png", "imageinfo": [{
+                    "thumburl": "https://upload.wikimedia.org/thumb/Horse.png",
+                    "url": "https://upload.wikimedia.org/Horse.png",
+                    "descriptionurl": "https://commons.wikimedia.org/wiki/File:Horse.png",
+                }]}}}})
+            return FakeResponse(status=403)
+
+    result = asyncio.run(bot.commons_find_image(FakeClient(), "horse"))
+    assert result["bytes"] is None
+    assert result["remote_url"] == "https://upload.wikimedia.org/thumb/Horse.png"
+    assert result["content_type"] == "image/png"
+
+
+def test_send_photo_accepts_remote_https_url(monkeypatch):
+    calls = []
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    asyncio.run(bot.send_photo(object(), 123, "https://upload.wikimedia.org/photo.jpg", "photo", parse_mode="HTML"))
+    assert calls[0][0] == "sendPhoto"
+    assert calls[0][1]["photo"] == "https://upload.wikimedia.org/photo.jpg"
+    assert calls[0][1]["parse_mode"] == "HTML"
+
+
+def test_markdown_renderer_compacts_and_isolates_long_raw_urls():
+    rendered, _ = bot.markdown_to_telegram_html("منبع: https://example.com/a/very/long/path")
+    assert 'href="https://example.com/a/very/long/path"' in rendered
+    assert rendered.endswith("<a href=\"https://example.com/a/very/long/path\">\u2068example.com\u2069</a>")
+    assert "\u2068" in rendered and "\u2069" in rendered
+
+
 def test_telegram_markdown_rendering_is_styled_and_escaped():
     text = "# عنوان\n\n- **پررنگ** و `کد` <script>\n> نکته\n[راهنما](https://example.com/a?x=1&y=2)"
     rendered, in_code = bot.markdown_to_telegram_html(text)
