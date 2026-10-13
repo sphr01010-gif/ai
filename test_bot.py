@@ -902,18 +902,27 @@ def test_commons_image_falls_back_to_remote_url_when_download_is_forbidden():
         async def get(self, url, **kwargs):
             if url.endswith("api.php"):
                 if kwargs["params"].get("list") == "search":
-                    return FakeResponse({"query": {"search": [{"title": "File:Horse.png"}]}})
-                return FakeResponse({"query": {"pages": {"1": {"title": "File:Horse.png", "imageinfo": [{
-                    "thumburl": "https://upload.wikimedia.org/thumb/Horse.png",
-                    "url": "https://upload.wikimedia.org/Horse.png",
-                    "descriptionurl": "https://commons.wikimedia.org/wiki/File:Horse.png",
-                }]}}}})
+                    return FakeResponse({"query": {"search": [
+                        {"title": "File:Horse.png"}, {"title": "File:Less-relevant-horse.png"},
+                    ]}})
+                return FakeResponse({"query": {"pages": {
+                    "1": {"title": "File:Horse.png", "imageinfo": [{
+                        "thumburl": "https://upload.wikimedia.org/thumb/Horse.png",
+                        "url": "https://upload.wikimedia.org/Horse.png",
+                        "descriptionurl": "https://commons.wikimedia.org/wiki/File:Horse.png",
+                    }]},
+                    "2": {"title": "File:Less-relevant-horse.png", "imageinfo": [{
+                        "thumburl": "https://upload.wikimedia.org/thumb/Less-relevant-horse.png",
+                        "url": "https://upload.wikimedia.org/Less-relevant-horse.png",
+                    }]},
+                }}})
             return FakeResponse(status=403)
 
     result = asyncio.run(bot.commons_find_image(FakeClient(), "horse"))
     assert result["bytes"] is None
     assert result["remote_url"] == "https://upload.wikimedia.org/thumb/Horse.png"
     assert result["content_type"] == "image/png"
+    assert result["title"] == "Horse.png"
 
 
 def test_commons_preserves_search_relevance_and_skips_animated_files():

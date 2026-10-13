@@ -1830,7 +1830,7 @@ async def commons_find_image(client: httpx.AsyncClient, query: str) -> dict[str,
                 (".jpg", "image/jpeg") if path.endswith((".jpg", ".jpeg")) else
                 ("", "")
             )
-            if ext:
+            if ext and remote_fallback is None:
                 remote_fallback = {**attribution, "bytes": None, "remote_url": thumbnail_url, "filename": "commons-image" + ext, "content_type": content_type}
         image_response = None
         for image_url in image_urls:
