@@ -691,7 +691,7 @@ def test_groq_uses_openai_compatible_rest_api(monkeypatch):
     ]}]
     asyncio.run(bot.groq_chat(client, image_messages))
     assert client.kwargs["json"]["model"] == bot.GROQ_VISION_MODEL
-    assert client.kwargs["json"]["max_completion_tokens"] == 1300
+    assert client.kwargs["json"]["max_completion_tokens"] == 800
 
 
 def test_groq_secret_is_redacted_from_provider_errors(monkeypatch):

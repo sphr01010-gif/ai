@@ -1125,10 +1125,11 @@ async def groq_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *
     if not selected_model:
         missing_variable = "GROQ_VISION_MODEL" if has_image else "GROQ_MODEL"
         raise RuntimeError(f"{missing_variable} is not configured")
+    max_completion_tokens = 800 if has_image else 1300
     response = await client.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={"model": selected_model, "messages": messages, "temperature": 0.6, "max_completion_tokens": 1300},
+        json={"model": selected_model, "messages": messages, "temperature": 0.6, "max_completion_tokens": max_completion_tokens},
         timeout=100,
     )
     if response.status_code >= 400:
