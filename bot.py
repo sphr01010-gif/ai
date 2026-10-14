@@ -77,21 +77,21 @@ SYSTEM_PROMPT = (
 
 MAIN_MENU_MARKUP = {
     "keyboard": [
-        [{"text": "گفت‌وگو"}, {"text": "جست‌وجوی وب"}],
-        [{"text": "انتخاب API"}],
-        [{"text": "ساخت تصویر"}],
+        [{"text": "◉ گفت‌وگو"}, {"text": "⌕ جست‌وجوی وب"}],
+        [{"text": "⚙ انتخاب API"}],
+        [{"text": "▧ ساخت تصویر"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
-    "input_field_placeholder": "گفت‌وگو، جست‌وجو، ساخت فایل یا انتخاب API",
+    "input_field_placeholder": "پیام بنویس یا یکی از قابلیت‌ها را انتخاب کن",
 }
 
 AI_PROVIDER_MARKUP = {
     "keyboard": [
-        [{"text": "APMIX"}, {"text": "Gemini"}],
-        [{"text": "Groq"}, {"text": "River"}],
-        [{"text": "خودکار"}, {"text": "بازگشت"}],
+        [{"text": "◆ APMIX"}, {"text": "◆ Gemini"}],
+        [{"text": "◆ Groq"}, {"text": "◆ River"}],
+        [{"text": "✓ خودکار"}, {"text": "↩ بازگشت"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": True,
@@ -103,10 +103,10 @@ def ai_provider_markup(user_id: int) -> dict[str, Any]:
     enabled = bool(get_user_settings(user_id).get("fallback_on_error", False))
     return {
         "keyboard": [
-            [{"text": "APMIX"}, {"text": "Gemini"}],
-            [{"text": "Groq"}, {"text": "River"}],
-            [{"text": "خودکار"}, {"text": "بازگشت"}],
-            [{"text": "جایگزینی هنگام خطا: " + ("روشن" if enabled else "خاموش")}],
+            [{"text": "◆ APMIX"}, {"text": "◆ Gemini"}],
+            [{"text": "◆ Groq"}, {"text": "◆ River"}],
+            [{"text": "✓ خودکار"}, {"text": "↩ بازگشت"}],
+            [{"text": "⟳ جایگزینی هنگام خطا · " + ("روشن" if enabled else "خاموش")}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
@@ -205,23 +205,43 @@ REMOVED_MENU_BUTTON_LABELS = {
 }
 
 MENU_BUTTON_ACTIONS = {
+    # Plain-text aliases remain supported for users who type an old button label.
     "گفت‌وگو": "chat",
+    "◉ گفت‌وگو": "chat",
     "جست‌وجوی وب": "search",
+    "⌕ جست‌وجوی وب": "search",
     "انتخاب API": "provider_menu",
+    "⚙ انتخاب API": "provider_menu",
     "ساخت تصویر": "create_image",
+    "▧ ساخت تصویر": "create_image",
     "APMIX": "select_provider_apmix",
+    "◆ APMIX": "select_provider_apmix",
     "Gemini": "select_provider_gemini",
+    "◆ Gemini": "select_provider_gemini",
     "Groq": "select_provider_groq",
+    "◆ Groq": "select_provider_groq",
     "River": "select_provider_river",
+    "◆ River": "select_provider_river",
     "خودکار": "select_provider_auto",
+    "✓ خودکار": "select_provider_auto",
     "جایگزینی هنگام خطا: روشن": "toggle_provider_fallback",
     "جایگزینی هنگام خطا: خاموش": "toggle_provider_fallback",
+    "⟳ جایگزینی هنگام خطا · روشن": "toggle_provider_fallback",
+    "⟳ جایگزینی هنگام خطا · خاموش": "toggle_provider_fallback",
     "بازگشت": "home",
+    "↩ بازگشت": "home",
 }
 
 HELP_TEXT = (
-    "سلام! من دستیار هوش مصنوعی تو هستم.\n\n"
-    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX، Gemini، Groq یا River را برای چت برگزینی."
+    "# دستیار هوشمند شخصی\n"
+    "────────────\n"
+    "سلام! برای شروع، پیام یا پرسشت را همین‌جا بنویس.\n\n"
+    "**قابلیت‌ها**\n"
+    "• گفت‌وگوی فارسی و چندزبانه، همراه با تحلیل عکس\n"
+    "• جست‌وجوی وب فقط وقتی صریحاً درخواستش کنی\n"
+    "• پیدا کردن عکس واقعی یا ساخت تصویر\n"
+    "• ساخت فایل‌های `.py`، `.pdf` و `.zip`\n\n"
+    "از دکمه‌های پایین برای انتخاب قابلیت یا ارائه‌دهندهٔ چت استفاده کن."
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
@@ -1555,38 +1575,44 @@ async def handle_menu_action(
             await send_text(client, chat_id, "ساخت تصویر هنوز تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
         else:
             set_user_state(user_id, "await_image_prompt")
-            await send_text(client, chat_id, "شرح تصویر را به فارسی یا انگلیسی بفرست؛ با مدل FLUX.1 [schnell] ساخته و همین‌جا ارسال می‌شود.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**ساخت تصویر با FLUX.1 [schnell]**\n\nشرح تصویر را به فارسی یا انگلیسی بفرست؛ تصویر ساخته‌شده همین‌جا نمایش داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "provider_menu":
         settings = get_user_settings(user_id)
         selected = settings.get("ai_provider", "auto")
         labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini", "groq": "Groq", "river": "River"}
         failover = "روشن است؛ در شکست provider انتخابی به سرویس دیگر می‌رود." if settings.get("fallback_on_error") else "خاموش است؛ provider دستی به سرویس دیگر نمی‌رود."
-        await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\nجایگزینی هنگام خطا: {failover}",
-                        reply_to, ai_provider_markup(user_id))
+        current = labels.get(selected, labels["auto"])
+        await send_text(
+            client,
+            chat_id,
+            f"## تنظیمات مدل چت\n────────────\n**مدل فعلی:** {current}\n**جایگزینی هنگام خطا:** {failover}\n\nبرای تغییر، یکی از گزینه‌های پایین را انتخاب کن.",
+            reply_to,
+            ai_provider_markup(user_id),
+        )
     elif action == "select_provider_apmix":
         if not APMIX_API_KEY:
             await send_text(client, chat_id, "APMIX پیکربندی نشده است؛ APMIX_API_KEY را در Railway Variables تنظیم کن.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "apmix")
-            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با کلید APMIX ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**APMIX فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "select_provider_gemini":
         if not GEMINI_API_KEY:
             await send_text(client, chat_id, "Gemini پیکربندی نشده است؛ GEMINI_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "gemini")
-            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با Gemini ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**Gemini فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "select_provider_groq":
         if not GROQ_API_KEY:
             await send_text(client, chat_id, "Groq پیکربندی نشده است؛ GROQ_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "groq")
-            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با Groq ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**Groq فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "select_provider_river":
         if not RIVER_API_KEY:
             await send_text(client, chat_id, "River پیکربندی نشده است؛ RIVER_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
         else:
             set_user_setting(user_id, "ai_provider", "river")
-            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با River ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**River فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "toggle_provider_fallback":
         current = bool(get_user_settings(user_id).get("fallback_on_error", False))
         set_user_setting(user_id, "fallback_on_error", not current)
@@ -1594,10 +1620,10 @@ async def handle_menu_action(
         await send_text(client, chat_id, f"جایگزینی به ارائه‌دهندهٔ دیگر هنگام خطا {label} شد.", reply_to, ai_provider_markup(user_id))
     elif action == "select_provider_auto":
         set_user_setting(user_id, "ai_provider", "auto")
-        await send_text(client, chat_id, "حالت خودکار فعال شد؛ بات طبق AI_PROVIDER_ORDER ارائه‌دهنده‌ها را امتحان می‌کند و در صورت خطا fallback می‌کند.", reply_to, MAIN_MENU_MARKUP)
+        await send_text(client, chat_id, "**حالت خودکار فعال شد**\n\nربات ارائه‌دهنده‌ها را طبق ترتیب تنظیم‌شده امتحان می‌کند و در صورت خطا سراغ گزینهٔ بعدی می‌رود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "chat":
         set_user_state(user_id, "chat")
-        await send_text(client, chat_id, "حالت گفت‌وگو آماده است؛ پیام یا پرسشت را بفرست.", reply_to, MAIN_MENU_MARKUP)
+        await send_text(client, chat_id, "**گفت‌وگو آماده است**\n\nپیام یا پرسشت را بفرست؛ پاسخ به زبان خودت خواهد بود.", reply_to, MAIN_MENU_MARKUP)
     elif action in {"search", "compare_search"}:
         state = "await_compare_search" if action == "compare_search" else "await_search"
         set_user_state(user_id, state)

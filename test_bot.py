@@ -196,9 +196,13 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"گفت‌وگو", "جست‌وجوی وب", "انتخاب API", "ساخت تصویر"}
+    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
+    assert bot.MENU_BUTTON_ACTIONS["◉ گفت‌وگو"] == "chat"
+    assert bot.MENU_BUTTON_ACTIONS["⌕ جست‌وجوی وب"] == "search"
+    assert bot.MENU_BUTTON_ACTIONS["⚙ انتخاب API"] == "provider_menu"
+    assert bot.MENU_BUTTON_ACTIONS["▧ ساخت تصویر"] == "create_image"
 
 
 def test_removed_menu_options_are_hidden_and_inert(tmp_path, monkeypatch):
@@ -573,7 +577,7 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
     monkeypatch.setattr(bot, "RIVER_API_KEY", "river-test-key")
-    asyncio.run(bot.process_message(object(), {**base, "text": "River"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "◆ River"}))
     assert bot.get_user_settings(123)["ai_provider"] == "river"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
@@ -844,7 +848,7 @@ def test_provider_fallback_toggle_persists_and_updates_button(tmp_path, monkeypa
     assert bot.get_user_settings(123)["fallback_on_error"] is False
     asyncio.run(bot.process_message(object(), {**base, "text": "جایگزینی هنگام خطا: خاموش"}))
     assert bot.get_user_settings(123)["fallback_on_error"] is True
-    assert "جایگزینی هنگام خطا: روشن" in str(calls[-1]["reply_markup"])
+    assert "⟳ جایگزینی هنگام خطا · روشن" in str(calls[-1]["reply_markup"])
 
 
 def test_weather_tool_calls_open_meteo_and_labels_source_and_local_time():
