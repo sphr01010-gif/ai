@@ -567,9 +567,9 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     assert bot.get_user_settings(123)["ai_provider"] == "gemini"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
-    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", "orca-test-key")
-    asyncio.run(bot.process_message(object(), {**base, "text": "OrcaRouter"}))
-    assert bot.get_user_settings(123)["ai_provider"] == "orcarouter"
+    monkeypatch.setattr(bot, "GROQ_API_KEY", "groq-test-key")
+    asyncio.run(bot.process_message(object(), {**base, "text": "Groq"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "groq"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
     asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
@@ -651,15 +651,24 @@ def test_removed_provider_setting_migrates_to_auto(tmp_path, monkeypatch):
     assert settings["language"] == "fa"
 
 
-def test_orcarouter_uses_openai_compatible_rest_api(monkeypatch):
-    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", "sk-orca-test-secret")
-    monkeypatch.setattr(bot, "ORCAROUTER_MODEL", "orcarouter/auto")
+
+def test_old_orcarouter_selection_migrates_to_groq(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "legacy-orcarouter-selection.sqlite3")
+    bot.init_db()
+    bot.save_user_settings(322, {"ai_provider": "orcarouter", "language": "fa"})
+    settings = bot.get_user_settings(322)
+    assert settings["ai_provider"] == "groq"
+    assert settings["language"] == "fa"
+
+def test_groq_uses_openai_compatible_rest_api(monkeypatch):
+    monkeypatch.setattr(bot, "GROQ_API_KEY", "gsk_test_secret")
+    monkeypatch.setattr(bot, "GROQ_MODEL", "openai/gpt-oss-20b")
 
     class FakeResponse:
         status_code = 200
         text = ""
         def json(self):
-            return {"choices": [{"message": {"content": "سلام از Orca"}}]}
+            return {"choices": [{"message": {"content": "سلام از Groq"}}]}
 
     class FakeClient:
         async def post(self, url, **kwargs):
@@ -669,27 +678,27 @@ def test_orcarouter_uses_openai_compatible_rest_api(monkeypatch):
 
     client = FakeClient()
     messages = [{"role": "user", "content": "سلام"}]
-    result = asyncio.run(bot.orcarouter_chat(client, messages))
-    assert client.url == "https://api.orcarouter.ai/v1/chat/completions"
-    assert client.kwargs["headers"]["Authorization"] == "Bearer sk-orca-test-secret"
-    assert client.kwargs["json"]["model"] == "orcarouter/auto"
+    result = asyncio.run(bot.groq_chat(client, messages))
+    assert client.url == "https://api.groq.com/openai/v1/chat/completions"
+    assert client.kwargs["headers"]["Authorization"] == "Bearer gsk_test_secret"
+    assert client.kwargs["json"]["model"] == "openai/gpt-oss-20b"
     assert client.kwargs["json"]["messages"] == messages
-    assert result["choices"][0]["message"]["content"] == "سلام از Orca"
+    assert result["choices"][0]["message"]["content"] == "سلام از Groq"
 
 
-def test_orcarouter_secret_is_redacted_from_provider_errors(monkeypatch):
-    secret = "sk-orca-sensitive-test-key"
-    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", secret)
+def test_groq_secret_is_redacted_from_provider_errors(monkeypatch):
+    secret = "gsk_sensitive_test_key"
+    monkeypatch.setattr(bot, "GROQ_API_KEY", secret)
     monkeypatch.setattr(bot, "APMIX_API_KEY", "")
     monkeypatch.setattr(bot, "GEMINI_API_KEY", "")
-    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["orcarouter"])
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["groq"])
 
-    async def fail_orcarouter(*args, **kwargs):
-        raise RuntimeError(f"OrcaRouter HTTP 401: invalid key {secret}")
+    async def fail_groq(*args, **kwargs):
+        raise RuntimeError(f"Groq HTTP 401: invalid key {secret}")
 
-    monkeypatch.setattr(bot, "orcarouter_chat", fail_orcarouter)
+    monkeypatch.setattr(bot, "groq_chat", fail_groq)
     try:
-        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="orcarouter"))
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="groq"))
     except RuntimeError as exc:
         assert "HTTP 401" in str(exc)
         assert secret not in str(exc)
