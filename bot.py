@@ -39,10 +39,12 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip()
+RIVER_API_KEY = os.getenv("RIVER_API_KEY", "").strip()
+RIVER_MODEL = os.getenv("RIVER_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash").strip()
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
-AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq").split(",") if name.strip()]
+AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq,river").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
@@ -88,7 +90,7 @@ MAIN_MENU_MARKUP = {
 AI_PROVIDER_MARKUP = {
     "keyboard": [
         [{"text": "APMIX"}, {"text": "Gemini"}],
-        [{"text": "Groq"}],
+        [{"text": "Groq"}, {"text": "River"}],
         [{"text": "خودکار"}, {"text": "بازگشت"}],
     ],
     "resize_keyboard": True,
@@ -102,7 +104,7 @@ def ai_provider_markup(user_id: int) -> dict[str, Any]:
     return {
         "keyboard": [
             [{"text": "APMIX"}, {"text": "Gemini"}],
-            [{"text": "Groq"}],
+            [{"text": "Groq"}, {"text": "River"}],
             [{"text": "خودکار"}, {"text": "بازگشت"}],
             [{"text": "جایگزینی هنگام خطا: " + ("روشن" if enabled else "خاموش")}],
         ],
@@ -210,6 +212,7 @@ MENU_BUTTON_ACTIONS = {
     "APMIX": "select_provider_apmix",
     "Gemini": "select_provider_gemini",
     "Groq": "select_provider_groq",
+    "River": "select_provider_river",
     "خودکار": "select_provider_auto",
     "جایگزینی هنگام خطا: روشن": "toggle_provider_fallback",
     "جایگزینی هنگام خطا: خاموش": "toggle_provider_fallback",
@@ -218,7 +221,7 @@ MENU_BUTTON_ACTIONS = {
 
 HELP_TEXT = (
     "سلام! من دستیار هوش مصنوعی تو هستم.\n\n"
-    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX، Gemini یا Groq را برای چت برگزینی."
+    "برای گفت‌وگو پیام عادی بفرست؛ «جست‌وجوی وب» برای جست‌وجوست و از «انتخاب API» می‌توانی APMIX، Gemini، Groq یا River را برای چت برگزینی."
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
@@ -334,7 +337,7 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
             pass
     if settings.get("ai_provider") == "orcarouter":
         settings["ai_provider"] = "groq"
-    if settings.get("ai_provider") not in {"auto", "apmix", "gemini", "groq"}:
+    if settings.get("ai_provider") not in {"auto", "apmix", "gemini", "groq", "river"}:
         settings["ai_provider"] = "auto"
     settings["fallback_on_error"] = bool(settings.get("fallback_on_error", False))
     return settings
@@ -352,7 +355,7 @@ def set_user_setting(user_id: int, name: str, value: Any) -> dict[str, Any]:
     settings = get_user_settings(user_id)
     if name not in DEFAULT_USER_SETTINGS:
         raise ValueError("Unknown user setting")
-    if name == "ai_provider" and value not in {"auto", "apmix", "gemini", "groq"}:
+    if name == "ai_provider" and value not in {"auto", "apmix", "gemini", "groq", "river"}:
         raise ValueError("Invalid AI provider")
     settings[name] = value
     save_user_settings(user_id, settings)
@@ -945,7 +948,7 @@ async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request:
     """Generate a file payload with the user's selected AI provider and local format libraries."""
     settings = get_user_settings(user_id)
     provider = settings.get("ai_provider", "auto")
-    if provider not in {"apmix", "gemini"}:
+    if provider not in {"apmix", "gemini", "groq", "river"}:
         provider = None
     if suffix == ".py":
         instruction = "Return only complete Python source code. Do not use Markdown fences or explanatory prose. Do not execute the code, claim it was tested, or include secrets."
@@ -1142,6 +1145,29 @@ async def groq_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *
     return data
 
 
+async def river_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Call River's OpenAI-compatible Chat Completions REST endpoint."""
+    if not RIVER_API_KEY:
+        raise RuntimeError("RIVER_API_KEY is not configured")
+    selected_model = (model or RIVER_MODEL).strip()
+    if not selected_model:
+        raise RuntimeError("RIVER_MODEL is not configured")
+    response = await client.post(
+        "https://api.river.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {RIVER_API_KEY}", "Content-Type": "application/json"},
+        json={"model": selected_model, "messages": messages, "temperature": 0.6, "max_tokens": 1300},
+        timeout=100,
+    )
+    if response.status_code >= 400:
+        detail = safe_provider_error(RuntimeError(response.text))
+        raise RuntimeError(f"River API HTTP {response.status_code}: {detail}")
+    data = response.json()
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError("River returned no chat completion")
+    return data
+
+
 API_TOOL_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
@@ -1253,7 +1279,7 @@ async def dispatch_api_tool(client: httpx.AsyncClient, text: str) -> str | None:
 def safe_provider_error(exc: Exception) -> str:
     """Return a short provider error without leaking API credentials."""
     detail = str(exc).replace("\r", " ").replace("\n", " ")
-    for secret in (APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY):
+    for secret in (APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, RIVER_API_KEY):
         if secret:
             detail = detail.replace(secret, "[REDACTED]")
     detail = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", detail)
@@ -1273,6 +1299,7 @@ async def model_chat(
         "apmix": (bool(APMIX_API_KEY), apmix_chat),
         "gemini": (bool(GEMINI_API_KEY), gemini_chat),
         "groq": (bool(GROQ_API_KEY), groq_chat),
+        "river": (bool(RIVER_API_KEY), river_chat),
     }
     if provider is not None:
         if provider not in providers:
@@ -1281,9 +1308,9 @@ async def model_chat(
             raise RuntimeError(f"Selected provider {provider} is not configured")
         provider_order = [provider]
         if fallback_on_error:
-            provider_order.extend(name for name in AI_PROVIDER_ORDER + ["apmix", "gemini", "groq"] if name != provider)
+            provider_order.extend(name for name in AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river"] if name != provider)
     else:
-        provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini", "groq"]
+        provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river"]
     errors: list[str] = []
     visited: set[str] = set()
     for name in provider_order:
@@ -1294,13 +1321,13 @@ async def model_chat(
         if not configured:
             continue
         try:
-            return await caller(client, messages, model=model if name in {"apmix", "groq"} else None)
+            return await caller(client, messages, model=model if name in {"apmix", "groq", "river"} else None)
         except (httpx.HTTPError, RuntimeError, ValueError) as exc:
             safe_detail = safe_provider_error(exc)
             log.warning("AI provider %s failed (%s): %s", name, type(exc).__name__, safe_detail)
             errors.append(f"{name}: {type(exc).__name__}: {safe_detail}")
     if not errors:
-        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY.")
+        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, or RIVER_API_KEY.")
     raise RuntimeError("All configured AI providers failed: " + "; ".join(errors))
 
 
@@ -1343,7 +1370,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_content}]
     selected_provider = settings.get("ai_provider", "auto")
-    if selected_provider not in {"apmix", "gemini", "groq"}:
+    if selected_provider not in {"apmix", "gemini", "groq", "river"}:
         selected_provider = None
     completion = await model_chat(client, messages, model=model, provider=selected_provider, fallback_on_error=bool(settings.get("fallback_on_error", False)))
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
@@ -1532,7 +1559,7 @@ async def handle_menu_action(
     elif action == "provider_menu":
         settings = get_user_settings(user_id)
         selected = settings.get("ai_provider", "auto")
-        labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini", "groq": "Groq"}
+        labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini", "groq": "Groq", "river": "River"}
         failover = "روشن است؛ در شکست provider انتخابی به سرویس دیگر می‌رود." if settings.get("fallback_on_error") else "خاموش است؛ provider دستی به سرویس دیگر نمی‌رود."
         await send_text(client, chat_id, f"ارائه‌دهندهٔ فعلی چت: {labels.get(selected, labels['auto'])}.\nجایگزینی هنگام خطا: {failover}",
                         reply_to, ai_provider_markup(user_id))
@@ -1554,6 +1581,12 @@ async def handle_menu_action(
         else:
             set_user_setting(user_id, "ai_provider", "groq")
             await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با Groq ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "select_provider_river":
+        if not RIVER_API_KEY:
+            await send_text(client, chat_id, "River پیکربندی نشده است؛ RIVER_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
+        else:
+            set_user_setting(user_id, "ai_provider", "river")
+            await send_text(client, chat_id, "انتخاب ذخیره شد؛ پیام‌های چت از این پس با River ارسال می‌شوند.", reply_to, MAIN_MENU_MARKUP)
     elif action == "toggle_provider_fallback":
         current = bool(get_user_settings(user_id).get("fallback_on_error", False))
         set_user_setting(user_id, "fallback_on_error", not current)
@@ -2255,7 +2288,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
         elif "TAVILY_API_KEY" in message_text:
             await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to, MAIN_MENU_MARKUP)
         elif "No AI provider is configured" in message_text or "not configured" in message_text:
-            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ یکی از APMIX_API_KEY، GEMINI_API_KEY یا GROQ_API_KEY را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ یکی از APMIX_API_KEY، GEMINI_API_KEY، GROQ_API_KEY یا RIVER_API_KEY را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
         else:
             await send_text(client, chat_id, f"نتوانستم این پیام را پردازش کنم: {message_text[:500]}", reply_to, MAIN_MENU_MARKUP)
 
@@ -2404,8 +2437,8 @@ async def reminder_loop(client: httpx.AsyncClient) -> None:
 
 async def run() -> None:
     missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", BOT_TOKEN), ("TELEGRAM_ALLOWED_USER_ID", ALLOWED_USER_ID)) if not value]
-    if not APMIX_API_KEY and not GEMINI_API_KEY and not GROQ_API_KEY:
-        missing.append("at least one of APMIX_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY")
+    if not APMIX_API_KEY and not GEMINI_API_KEY and not GROQ_API_KEY and not RIVER_API_KEY:
+        missing.append("at least one of APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, or RIVER_API_KEY")
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     try:

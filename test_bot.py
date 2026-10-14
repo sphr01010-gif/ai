@@ -572,6 +572,11 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     assert bot.get_user_settings(123)["ai_provider"] == "groq"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
+    monkeypatch.setattr(bot, "RIVER_API_KEY", "river-test-key")
+    asyncio.run(bot.process_message(object(), {**base, "text": "River"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "river"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+
     asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
     assert bot.get_user_settings(123)["ai_provider"] == "apmix"
     asyncio.run(bot.process_message(object(), {**base, "text": "خودکار"}))
@@ -714,6 +719,48 @@ def test_groq_secret_is_redacted_from_provider_errors(monkeypatch):
     else:
         raise AssertionError("provider failure should be surfaced")
 
+
+
+def test_model_chat_uses_explicit_river_provider(monkeypatch):
+    monkeypatch.setattr(bot, "RIVER_API_KEY", "river-test-key")
+    observed = []
+
+    async def fake_river(client, messages, *, model=None):
+        observed.append((messages, model))
+        return {"choices": [{"message": {"content": "River selected"}}]}
+
+    monkeypatch.setattr(bot, "river_chat", fake_river)
+    messages = [{"role": "user", "content": "hello"}]
+    result = asyncio.run(bot.model_chat(object(), messages, provider="river"))
+    assert result["choices"][0]["message"]["content"] == "River selected"
+    assert observed == [(messages, None)]
+
+
+def test_river_uses_openai_compatible_rest_api(monkeypatch):
+    monkeypatch.setattr(bot, "RIVER_API_KEY", "rv_test_secret")
+    monkeypatch.setattr(bot, "RIVER_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"choices": [{"message": {"content": "سلام از River"}}]}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            self.url = url
+            self.kwargs = kwargs
+            return FakeResponse()
+
+    client = FakeClient()
+    messages = [{"role": "user", "content": "سلام"}]
+    result = asyncio.run(bot.river_chat(client, messages))
+    assert client.url == "https://api.river.ai/v1/chat/completions"
+    assert client.kwargs["headers"]["Authorization"] == "Bearer rv_test_secret"
+    assert client.kwargs["json"]["model"] == "deepseek-ai/DeepSeek-V4.1-Flash"
+    assert client.kwargs["json"]["messages"] == messages
+    assert client.kwargs["json"]["max_tokens"] == 1300
+    assert result["choices"][0]["message"]["content"] == "سلام از River"
 
 
 def test_gemini_retries_transient_503_then_succeeds(monkeypatch):
