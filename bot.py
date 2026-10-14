@@ -216,8 +216,9 @@ HELP_TEXT = (
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
-    r"(?i)\b(search the web|search online|look up online|latest|current|today|right now|recent|news|weather|exchange rate|price)\b"
-    r"|جست.?وجو|در وب بگرد|آخرین|جدیدترین|امروز|اکنون|همین الان|قیمت|نرخ|اخبار|آب.?و.?هوا|نتیجه.?ی بازی"
+    r"(?i)\b(?:search\s+(?:the\s+)?web|search\s+online|look\s+up\s+online|find\s+.+\s+online)\b"
+    r"|(?:در|توی)\s*(?:وب|اینترنت)\s*(?:جست[‌-]?وجو\s*کن|بگرد|پیدا\s*کن)"
+    r"|(?:جست[‌-]?وجو|سرچ)\s*(?:کن|بکن)"
 )
 
 

@@ -149,8 +149,12 @@ def test_apmix_chat_requires_apmix_key(monkeypatch):
 
 
 def test_web_search_trigger_detection():
-    assert bot.should_search_web("What is the latest weather today?")
-    assert bot.should_search_web("آخرین قیمت دلار چقدر است؟")
+    assert bot.should_search_web("Search the web for the latest weather today")
+    assert bot.should_search_web("در اینترنت دربارهٔ وضعیت هوا جست‌وجو کن")
+    assert bot.should_search_web("لطفاً این موضوع را سرچ کن")
+    assert not bot.should_search_web("What is the latest weather today?")
+    assert not bot.should_search_web("آخرین قیمت دلار چقدر است؟")
+    assert not bot.should_search_web("امروز هوا چطور است؟")
     assert not bot.should_search_web("سلام، حالت چطوره؟")
 
 
