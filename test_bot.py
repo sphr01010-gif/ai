@@ -685,6 +685,14 @@ def test_groq_uses_openai_compatible_rest_api(monkeypatch):
     assert client.kwargs["json"]["messages"] == messages
     assert result["choices"][0]["message"]["content"] == "سلام از Groq"
 
+    image_messages = [{"role": "user", "content": [
+        {"type": "text", "text": "این چیست؟"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="}},
+    ]}]
+    asyncio.run(bot.groq_chat(client, image_messages))
+    assert client.kwargs["json"]["model"] == bot.GROQ_VISION_MODEL
+    assert client.kwargs["json"]["max_completion_tokens"] == 1300
+
 
 def test_groq_secret_is_redacted_from_provider_errors(monkeypatch):
     secret = "gsk_sensitive_test_key"

@@ -25,7 +25,7 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 
 ## اتصال Groq
 
-از [کنسول Groq](https://console.groq.com/keys) یک API key بساز و آن را فقط در Railway → Service → **Variables** با نام `GROQ_API_KEY` ثبت کن؛ کلید را در گفتگو یا GitHub قرار نده. مدل پیش‌فرض `GROQ_MODEL=openai/gpt-oss-20b` است. می‌توانی شناسهٔ مدل فعال دیگری را از [فهرست رسمی مدل‌های Groq](https://console.groq.com/docs/models) انتخاب کنی.
+از [کنسول Groq](https://console.groq.com/keys) یک API key بساز و آن را فقط در Railway → Service → **Variables** با نام `GROQ_API_KEY` ثبت کن؛ کلید را در گفتگو یا GitHub قرار نده. مدل پیش‌فرض گفت‌وگوی متنی `GROQ_MODEL=openai/gpt-oss-20b` است. وقتی عکس بفرستی، ربات به‌طور خودکار از مدل بینایی `GROQ_VISION_MODEL=qwen/qwen3.8-27b` استفاده می‌کند. مدل‌های فعال را در [فهرست رسمی Groq](https://console.groq.com/docs/models) ببین.
 
 برای چت، در تلگرام «انتخاب API» و سپس «Groq» را بزن؛ یا حالت «خودکار» را انتخاب کن تا ربات طبق `AI_PROVIDER_ORDER` پیش برود. ترتیب پیش‌فرض `apmix,gemini,groq` است. اگر قبلاً در Railway مقدار `AI_PROVIDER_ORDER` را دستی تنظیم کرده‌ای، آن را به‌روز کن. پیاده‌سازی از endpoint سازگار با OpenAI در `https://api.groq.com/openai/v1/chat/completions` استفاده می‌کند. هزینه و محدودیت مصرف به حساب و طرح Groq بستگی دارد.
 
@@ -85,7 +85,8 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 - `GEMINI_API_KEY` — کلید Google AI Studio؛ فقط در Railway Variables وارد شود.
 - `GEMINI_MODEL` — شناسهٔ مدل Gemini؛ پیش‌فرض `gemini-3.8-flash`.
 - `GROQ_API_KEY` — کلید API ساخته‌شده در کنسول Groq؛ فقط در Railway Variables وارد شود.
-- `GROQ_MODEL` — شناسهٔ مدل Groq؛ پیش‌فرض `openai/gpt-oss-20b`.
+- `GROQ_MODEL` — شناسهٔ مدل متنی Groq؛ پیش‌فرض `openai/gpt-oss-20b`.
+- `GROQ_VISION_MODEL` — مدل Groq برای ورودی عکس؛ پیش‌فرض `qwen/qwen3.8-27b`. پیام تصویری به‌طور خودکار از این مدل استفاده می‌کند.
 - `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback در حالت خودکار؛ پیش‌فرض `apmix,gemini,groq`، برای اولویت‌دادن به Groq مقدار `groq,apmix,gemini` بگذار. در حالت انتخاب دستی fallback را از دکمهٔ «انتخاب API» کنترل کن.
 - `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. برای فعال‌سازی، کلید را از داشبورد Tavily بساز و با همین نام دقیق در Railway → Service → **Variables** اضافه کن؛ سپس سرویس را redeploy کن. تا آن زمان گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب اجرا نمی‌شود. کلید را در چت یا GitHub نفرست.
 - `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` — اختیاری؛ برای ساخت تصویر با Cloudflare Workers AI. این token جدا از کلیدهای APMIX و Gemini است.

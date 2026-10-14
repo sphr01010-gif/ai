@@ -38,6 +38,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip()
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
@@ -1037,7 +1038,7 @@ async def apmix_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], 
     """Call the existing APMIX OpenAI-compatible endpoint."""
     if not APMIX_API_KEY:
         raise RuntimeError("APMIX_API_KEY is not configured")
-    payload: dict[str, Any] = {"model": model or MODEL, "messages": messages, "temperature": 0.6, "max_tokens": 1300}
+    payload: dict[str, Any] = {"model": model or MODEL, "messages": messages, "temperature": 0.6, "max_completion_tokens": 1300}
     response = await client.post(APMIX_API, headers={"Authorization": f"Bearer {APMIX_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=100)
     if response.status_code >= 400:
         # Never include secrets or raw request headers in logs/messages.
@@ -1115,13 +1116,19 @@ async def groq_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *
     """Call Groq's OpenAI-compatible Chat Completions REST endpoint."""
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not configured")
-    selected_model = (model or GROQ_MODEL).strip()
+    has_image = any(
+        isinstance(message.get("content"), list)
+        and any(isinstance(item, dict) and item.get("type") == "image_url" for item in message["content"])
+        for message in messages
+    )
+    selected_model = (model or (GROQ_VISION_MODEL if has_image else GROQ_MODEL)).strip()
     if not selected_model:
-        raise RuntimeError("GROQ_MODEL is not configured")
+        missing_variable = "GROQ_VISION_MODEL" if has_image else "GROQ_MODEL"
+        raise RuntimeError(f"{missing_variable} is not configured")
     response = await client.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={"model": selected_model, "messages": messages, "temperature": 0.6, "max_tokens": 1300},
+        json={"model": selected_model, "messages": messages, "temperature": 0.6, "max_completion_tokens": 1300},
         timeout=100,
     )
     if response.status_code >= 400:
