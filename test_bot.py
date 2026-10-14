@@ -567,6 +567,11 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     assert bot.get_user_settings(123)["ai_provider"] == "gemini"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
+    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", "orca-test-key")
+    asyncio.run(bot.process_message(object(), {**base, "text": "OrcaRouter"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "orcarouter"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+
     asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
     assert bot.get_user_settings(123)["ai_provider"] == "apmix"
     asyncio.run(bot.process_message(object(), {**base, "text": "خودکار"}))
@@ -644,6 +649,53 @@ def test_removed_provider_setting_migrates_to_auto(tmp_path, monkeypatch):
     settings = bot.get_user_settings(321)
     assert settings["ai_provider"] == "auto"
     assert settings["language"] == "fa"
+
+
+def test_orcarouter_uses_openai_compatible_rest_api(monkeypatch):
+    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", "sk-orca-test-secret")
+    monkeypatch.setattr(bot, "ORCAROUTER_MODEL", "orcarouter/auto")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"choices": [{"message": {"content": "سلام از Orca"}}]}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            self.url = url
+            self.kwargs = kwargs
+            return FakeResponse()
+
+    client = FakeClient()
+    messages = [{"role": "user", "content": "سلام"}]
+    result = asyncio.run(bot.orcarouter_chat(client, messages))
+    assert client.url == "https://api.orcarouter.ai/v1/chat/completions"
+    assert client.kwargs["headers"]["Authorization"] == "Bearer sk-orca-test-secret"
+    assert client.kwargs["json"]["model"] == "orcarouter/auto"
+    assert client.kwargs["json"]["messages"] == messages
+    assert result["choices"][0]["message"]["content"] == "سلام از Orca"
+
+
+def test_orcarouter_secret_is_redacted_from_provider_errors(monkeypatch):
+    secret = "sk-orca-sensitive-test-key"
+    monkeypatch.setattr(bot, "ORCAROUTER_API_KEY", secret)
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["orcarouter"])
+
+    async def fail_orcarouter(*args, **kwargs):
+        raise RuntimeError(f"OrcaRouter HTTP 401: invalid key {secret}")
+
+    monkeypatch.setattr(bot, "orcarouter_chat", fail_orcarouter)
+    try:
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="orcarouter"))
+    except RuntimeError as exc:
+        assert "HTTP 401" in str(exc)
+        assert secret not in str(exc)
+        assert "[REDACTED]" in str(exc)
+    else:
+        raise AssertionError("provider failure should be surfaced")
 
 
 
