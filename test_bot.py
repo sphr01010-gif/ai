@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import zipfile
 from datetime import datetime, timedelta
@@ -577,8 +578,13 @@ def test_provider_selection_persists_and_requires_configuration(tmp_path, monkey
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
     monkeypatch.setattr(bot, "RIVER_API_KEY", "river-test-key")
+    monkeypatch.setattr(bot, "RADOX_API_KEY", "radox-test-key")
     asyncio.run(bot.process_message(object(), {**base, "text": "◆ River"}))
     assert bot.get_user_settings(123)["ai_provider"] == "river"
+    assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
+
+    asyncio.run(bot.process_message(object(), {**base, "text": "◆ RadoxAI"}))
+    assert bot.get_user_settings(123)["ai_provider"] == "radox"
     assert calls[-1][1]["reply_markup"] == bot.MAIN_MENU_MARKUP
 
     asyncio.run(bot.process_message(object(), {**base, "text": "APMIX"}))
@@ -727,6 +733,7 @@ def test_groq_secret_is_redacted_from_provider_errors(monkeypatch):
 
 def test_model_chat_uses_explicit_river_provider(monkeypatch):
     monkeypatch.setattr(bot, "RIVER_API_KEY", "river-test-key")
+    monkeypatch.setattr(bot, "RADOX_API_KEY", "radox-test-key")
     observed = []
 
     async def fake_river(client, messages, *, model=None):
@@ -765,6 +772,100 @@ def test_river_uses_openai_compatible_rest_api(monkeypatch):
     assert client.kwargs["json"]["messages"] == messages
     assert client.kwargs["json"]["max_tokens"] == 1300
     assert result["choices"][0]["message"]["content"] == "سلام از River"
+
+
+def test_radox_uses_openai_compatible_chat_and_vision_models(monkeypatch):
+    monkeypatch.setattr(bot, "RADOX_API_KEY", "cc_test_secret")
+    monkeypatch.setattr(bot, "RADOX_MODEL", "deepseek-v4-flash-0731")
+    monkeypatch.setattr(bot, "RADOX_VISION_MODEL", "gpt-5.6-luna")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"choices": [{"message": {"content": "سلام از RadoxAI"}}]}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            self.url = url
+            self.kwargs = kwargs
+            return FakeResponse()
+
+    client = FakeClient()
+    messages = [{"role": "user", "content": "سلام"}]
+    result = asyncio.run(bot.radox_chat(client, messages))
+    assert client.url == "https://radoxai.com/v1/chat/completions"
+    assert client.kwargs["headers"]["Authorization"] == "Bearer cc_test_secret"
+    assert client.kwargs["json"]["model"] == "deepseek-v4-flash-0731"
+    assert client.kwargs["json"]["messages"] == messages
+    assert "max_tokens" not in client.kwargs["json"]
+    assert result["choices"][0]["message"]["content"] == "سلام از RadoxAI"
+
+    image_messages = [{"role": "user", "content": [
+        {"type": "text", "text": "این چیست؟"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="}},
+    ]}]
+    asyncio.run(bot.radox_chat(client, image_messages))
+    assert client.kwargs["json"]["model"] == "gpt-5.6-luna"
+
+
+def test_radox_rejects_images_over_documented_payload_limits(monkeypatch):
+    monkeypatch.setattr(bot, "RADOX_API_KEY", "cc_test_secret")
+    image_data = base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode("ascii")
+    messages = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+    ]}]
+    try:
+        asyncio.run(bot.radox_chat(object(), messages))
+    except ValueError as exc:
+        assert "۵ مگابایت" in str(exc)
+    else:
+        raise AssertionError("oversized image should be rejected before sending")
+
+
+def test_radox_secret_is_redacted_from_provider_errors(monkeypatch):
+    secret = "cc_sensitive_test_key"
+    monkeypatch.setattr(bot, "RADOX_API_KEY", secret)
+    monkeypatch.setattr(bot, "APMIX_API_KEY", "")
+    monkeypatch.setattr(bot, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(bot, "GROQ_API_KEY", "")
+    monkeypatch.setattr(bot, "RIVER_API_KEY", "")
+    monkeypatch.setattr(bot, "AI_PROVIDER_ORDER", ["radox"])
+
+    async def fail_radox(*args, **kwargs):
+        raise RuntimeError(f"RadoxAI API HTTP 401: invalid key {secret}")
+
+    monkeypatch.setattr(bot, "radox_chat", fail_radox)
+    try:
+        asyncio.run(bot.model_chat(object(), [{"role": "user", "content": "hi"}], provider="radox"))
+    except RuntimeError as exc:
+        assert "HTTP 401" in str(exc)
+        assert secret not in str(exc)
+        assert "[REDACTED]" in str(exc)
+    else:
+        raise AssertionError("RadoxAI failure should be surfaced")
+
+
+def test_radox_model_chat_uses_explicit_provider(monkeypatch):
+    monkeypatch.setattr(bot, "RADOX_API_KEY", "cc_test_key")
+    observed = []
+
+    async def fake_radox(client, messages, *, model=None):
+        observed.append((messages, model))
+        return {"choices": [{"message": {"content": "Radox selected"}}]}
+
+    monkeypatch.setattr(bot, "radox_chat", fake_radox)
+    messages = [{"role": "user", "content": "hello"}]
+    result = asyncio.run(bot.model_chat(object(), messages, provider="radox"))
+    assert result["choices"][0]["message"]["content"] == "Radox selected"
+    assert observed == [(messages, None)]
+
+
+def test_make_image_content_builds_openai_compatible_data_uri():
+    content = bot.make_image_content("این چیست؟", [b"fake-image"], "image/png")
+    assert content[0] == {"type": "text", "text": "این چیست؟"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_gemini_retries_transient_503_then_succeeds(monkeypatch):

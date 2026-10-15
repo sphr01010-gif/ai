@@ -41,10 +41,13 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip()
 RIVER_API_KEY = os.getenv("RIVER_API_KEY", "").strip()
 RIVER_MODEL = os.getenv("RIVER_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash").strip()
+RADOX_API_KEY = os.getenv("RADOX_API_KEY", "").strip()
+RADOX_MODEL = os.getenv("RADOX_MODEL", "deepseek-v4-flash-0731").strip()
+RADOX_VISION_MODEL = os.getenv("RADOX_VISION_MODEL", "gpt-5.6-luna").strip()
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
-AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq,river").split(",") if name.strip()]
+AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq,river,radox").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
@@ -114,7 +117,8 @@ AI_PROVIDER_MARKUP = {
     "keyboard": [
         [{"text": "◆ APMIX"}, {"text": "◆ Gemini"}],
         [{"text": "◆ Groq"}, {"text": "◆ River"}],
-        [{"text": "✓ خودکار"}, {"text": "↩ بازگشت"}],
+        [{"text": "◆ RadoxAI"}, {"text": "✓ خودکار"}],
+        [{"text": "↩ بازگشت"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": True,
@@ -128,7 +132,8 @@ def ai_provider_markup(user_id: int) -> dict[str, Any]:
         "keyboard": [
             [{"text": "◆ APMIX"}, {"text": "◆ Gemini"}],
             [{"text": "◆ Groq"}, {"text": "◆ River"}],
-            [{"text": "✓ خودکار"}, {"text": "↩ بازگشت"}],
+            [{"text": "◆ RadoxAI"}, {"text": "✓ خودکار"}],
+            [{"text": "↩ بازگشت"}],
             [{"text": "⟳ جایگزینی هنگام خطا · " + ("روشن" if enabled else "خاموش")}],
         ],
         "resize_keyboard": True,
@@ -263,6 +268,8 @@ MENU_BUTTON_ACTIONS = {
     "◆ Groq": "select_provider_groq",
     "River": "select_provider_river",
     "◆ River": "select_provider_river",
+    "RadoxAI": "select_provider_radox",
+    "◆ RadoxAI": "select_provider_radox",
     "خودکار": "select_provider_auto",
     "✓ خودکار": "select_provider_auto",
     "جایگزینی هنگام خطا: روشن": "toggle_provider_fallback",
@@ -405,7 +412,7 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
             pass
     if settings.get("ai_provider") == "orcarouter":
         settings["ai_provider"] = "groq"
-    if settings.get("ai_provider") not in {"auto", "apmix", "gemini", "groq", "river"}:
+    if settings.get("ai_provider") not in {"auto", "apmix", "gemini", "groq", "river", "radox"}:
         settings["ai_provider"] = "auto"
     settings["fallback_on_error"] = bool(settings.get("fallback_on_error", False))
     return settings
@@ -423,7 +430,7 @@ def set_user_setting(user_id: int, name: str, value: Any) -> dict[str, Any]:
     settings = get_user_settings(user_id)
     if name not in DEFAULT_USER_SETTINGS:
         raise ValueError("Unknown user setting")
-    if name == "ai_provider" and value not in {"auto", "apmix", "gemini", "groq", "river"}:
+    if name == "ai_provider" and value not in {"auto", "apmix", "gemini", "groq", "river", "radox"}:
         raise ValueError("Invalid AI provider")
     settings[name] = value
     save_user_settings(user_id, settings)
@@ -923,6 +930,17 @@ async def send_answer(
     await send_text(client, chat_id, pages[0], reply_to, long_answer_markup(len(pages) > 1))
 
 
+def make_image_content(prompt: str, images: list[bytes], image_mime: str = "image/jpeg") -> list[dict[str, Any]]:
+    """Build OpenAI-compatible text and base64 image content parts."""
+    parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for image in images:
+        encoded = base64.b64encode(image).decode("ascii")
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{encoded}"}})
+    return parts
+
+
+
+
 def user_facing_error(exc: Exception, user_id: int | None = None) -> str:
     """Map service failures to concise next steps without exposing raw API details."""
     detail = safe_provider_error(exc).lower()
@@ -931,7 +949,7 @@ def user_facing_error(exc: Exception, user_id: int | None = None) -> str:
         if secret:
             detail = detail.replace(secret.lower(), "[redacted]")
             safe_text = safe_text.replace(secret, "[REDACTED]")
-    providers = (("apmix", "APMIX"), ("gemini", "Gemini"), ("groq", "Groq"), ("river", "River"))
+    providers = (("apmix", "APMIX"), ("gemini", "Gemini"), ("groq", "Groq"), ("river", "River"), ("radoxai", "RadoxAI"))
     failed_provider = next((label for key, label in providers if re.search(rf"\b{key}\b", detail)), None)
     if "all configured ai providers failed" in detail:
         context = "همهٔ ارائه‌دهنده‌های فعال ناموفق بودند"
@@ -961,6 +979,12 @@ def user_facing_error(exc: Exception, user_id: int | None = None) -> str:
         return "ساخت تصویر تنظیم نشده است؛ مقدارهای CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway بررسی کن."
     if "no ai provider is configured" in detail or ("selected provider" in detail and "not configured" in detail):
         return with_context("هیچ ارائه‌دهندهٔ چت آماده نیست؛ کلید API سرویس انتخابی را در Railway بررسی کن یا حالت خودکار را برگزین.")
+    if "radoxai" in detail and ("http 402" in detail or "insufficient_funds" in detail):
+        return with_context("اعتبار یا سهمیهٔ حساب RadoxAI کافی نیست؛ بخش Usage/Billing داشبورد را بررسی کن یا ارائه‌دهندهٔ دیگری را انتخاب کن.")
+    if "radoxai" in detail and "http 404" in detail and ("model" in detail or "not_found" in detail):
+        return with_context("مدل RadoxAI برای این کلید در دسترس نیست؛ شناسهٔ RADOX_MODEL یا RADOX_VISION_MODEL را با فهرست مدل‌های مجاز حسابت تطبیق بده.")
+    if "radoxai" in detail and "http 422" in detail and any(marker in detail for marker in ("image", "vision", "unsupported_content")):
+        return with_context("مدل انتخابی RadoxAI تصویر را نمی‌پذیرد؛ RADOX_VISION_MODEL را روی مدلی با قابلیت Vision تنظیم کن.")
     if any(marker in detail for marker in ("http 401", "http 403", "invalid_api_key", "model_access_denied", "unauthorized")):
         return with_context("کلید API یا دسترسی آن به مدل پذیرفته نشد؛ در پنل ارائه‌دهنده فعال‌بودن کلید و مجوز مدل را بررسی کن. کلید را در چت نفرست.")
     if any(marker in detail for marker in ("http 429", "rate_limit", "quota", "otpm", "too many requests", "request too large")):
@@ -1156,7 +1180,7 @@ async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request:
     """Generate a file payload with the user's selected AI provider and local format libraries."""
     settings = get_user_settings(user_id)
     provider = settings.get("ai_provider", "auto")
-    if provider not in {"apmix", "gemini", "groq", "river"}:
+    if provider not in {"apmix", "gemini", "groq", "river", "radox"}:
         provider = None
     if suffix == ".py":
         instruction = "Return only complete Python source code. Do not use Markdown fences or explanatory prose. Do not execute the code, claim it was tested, or include secrets."
@@ -1383,6 +1407,62 @@ async def river_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], 
     return data
 
 
+async def radox_chat(client: httpx.AsyncClient, messages: list[dict[str, Any]], *, model: str | None = None) -> dict[str, Any]:
+    """Call RadoxAI's OpenAI-compatible Chat Completions endpoint."""
+    if not RADOX_API_KEY:
+        raise RuntimeError("RADOX_API_KEY is not configured")
+    has_image = any(
+        isinstance(message.get("content"), list)
+        and any(isinstance(item, dict) and item.get("type") == "image_url" for item in message["content"])
+        for message in messages
+    )
+    selected_model = (model or (RADOX_VISION_MODEL if has_image else RADOX_MODEL)).strip()
+    if not selected_model:
+        missing_variable = "RADOX_VISION_MODEL" if has_image else "RADOX_MODEL"
+        raise RuntimeError(f"{missing_variable} is not configured")
+
+    if has_image:
+        total_image_payload_bytes = 0
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image_url":
+                    continue
+                url = item.get("image_url", {}).get("url", "")
+                if not isinstance(url, str) or not url.startswith("data:"):
+                    continue
+                encoded = url.partition(",")[2]
+                try:
+                    image_bytes = base64.b64decode(encoded, validate=True)
+                except (ValueError, base64.binascii.Error) as exc:
+                    raise ValueError("دادهٔ تصویر برای RadoxAI معتبر نیست؛ عکس را دوباره بفرست.") from exc
+                if len(image_bytes) > 5 * 1024 * 1024:
+                    raise ValueError("RadoxAI برای هر تصویر حداکثر ۵ مگابایت می‌پذیرد؛ عکس کوچک‌تری بفرست.")
+                total_image_payload_bytes += len(url.encode("utf-8"))
+        if total_image_payload_bytes > 8 * 1024 * 1024:
+            raise ValueError("مجموع تصاویر برای RadoxAI بیش از ۸ مگابایت است؛ تعداد یا اندازهٔ تصاویر را کم کن.")
+
+    response = await client.post(
+        "https://radoxai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {RADOX_API_KEY}", "Content-Type": "application/json"},
+        # Omit max_tokens to retain RadoxAI's documented default, which is important for reasoning models.
+        json={"model": selected_model, "messages": messages, "temperature": 0.6},
+        timeout=100,
+    )
+    if response.status_code >= 400:
+        detail = safe_provider_error(RuntimeError(response.text))
+        raise RuntimeError(f"RadoxAI API HTTP {response.status_code}: {detail}")
+    data = response.json()
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError("RadoxAI returned no chat completion")
+    return data
+
+
+
+
 API_TOOL_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
@@ -1494,7 +1574,7 @@ async def dispatch_api_tool(client: httpx.AsyncClient, text: str) -> str | None:
 def safe_provider_error(exc: Exception) -> str:
     """Return a short provider error without leaking API credentials."""
     detail = str(exc).replace("\r", " ").replace("\n", " ")
-    for secret in (APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, RIVER_API_KEY):
+    for secret in (APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, RIVER_API_KEY, RADOX_API_KEY):
         if secret:
             detail = detail.replace(secret, "[REDACTED]")
     detail = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", detail)
@@ -1515,6 +1595,7 @@ async def model_chat(
         "gemini": (bool(GEMINI_API_KEY), gemini_chat),
         "groq": (bool(GROQ_API_KEY), groq_chat),
         "river": (bool(RIVER_API_KEY), river_chat),
+        "radox": (bool(RADOX_API_KEY), radox_chat),
     }
     if provider is not None:
         if provider not in providers:
@@ -1523,9 +1604,9 @@ async def model_chat(
             raise RuntimeError(f"Selected provider {provider} is not configured")
         provider_order = [provider]
         if fallback_on_error:
-            provider_order.extend(name for name in AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river"] if name != provider)
+            provider_order.extend(name for name in AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river", "radox"] if name != provider)
     else:
-        provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river"]
+        provider_order = AI_PROVIDER_ORDER + ["apmix", "gemini", "groq", "river", "radox"]
     errors: list[str] = []
     visited: set[str] = set()
     for name in provider_order:
@@ -1536,13 +1617,13 @@ async def model_chat(
         if not configured:
             continue
         try:
-            return await caller(client, messages, model=model if name in {"apmix", "groq", "river"} else None)
+            return await caller(client, messages, model=model if name in {"apmix", "groq", "river", "radox"} else None)
         except (httpx.HTTPError, RuntimeError, ValueError) as exc:
             safe_detail = safe_provider_error(exc)
             log.warning("AI provider %s failed (%s): %s", name, type(exc).__name__, safe_detail)
             errors.append(f"{name}: {type(exc).__name__}: {safe_detail}")
     if not errors:
-        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, or RIVER_API_KEY.")
+        raise RuntimeError("No AI provider is configured. Set APMIX_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, RIVER_API_KEY, or RADOX_API_KEY.")
     raise RuntimeError("All configured AI providers failed: " + "; ".join(errors))
 
 
@@ -1585,7 +1666,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
             user_content += "\n\n(Web search unavailable: " + str(search_result["error"])[:250] + ")"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_content}]
     selected_provider = settings.get("ai_provider", "auto")
-    if selected_provider not in {"apmix", "gemini", "groq", "river"}:
+    if selected_provider not in {"apmix", "gemini", "groq", "river", "radox"}:
         selected_provider = None
     completion = await model_chat(client, messages, model=model, provider=selected_provider, fallback_on_error=bool(settings.get("fallback_on_error", False)))
     answer = completion["choices"][0]["message"].get("content") or "نتوانستم پاسخ متنی بسازم."
@@ -1677,12 +1758,6 @@ def render_pdf_pages(data: bytes, max_pages: int = 3) -> list[bytes]:
     return pages
 
 
-def make_image_content(prompt: str, images: list[bytes], image_mime: str = "image/jpeg") -> list[dict[str, Any]]:
-    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    for image in images[:4]:
-        encoded = base64.b64encode(image).decode("ascii")
-        content.append({"type": "image_url", "image_url": {"url": f"data:{image_mime};base64," + encoded}})
-    return content
 
 
 def encode_saved_images(images: list[bytes]) -> bytes:
@@ -1777,7 +1852,7 @@ async def handle_menu_action(
     elif action == "provider_menu":
         settings = get_user_settings(user_id)
         selected = settings.get("ai_provider", "auto")
-        labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini", "groq": "Groq", "river": "River"}
+        labels = {"auto": "خودکار (ترتیب تنظیم‌شده)", "apmix": "APMIX", "gemini": "Gemini", "groq": "Groq", "river": "River", "radox": "RadoxAI"}
         failover = "روشن است؛ در شکست provider انتخابی به سرویس دیگر می‌رود." if settings.get("fallback_on_error") else "خاموش است؛ provider دستی به سرویس دیگر نمی‌رود."
         current = labels.get(selected, labels["auto"])
         await send_text(
@@ -1811,6 +1886,12 @@ async def handle_menu_action(
         else:
             set_user_setting(user_id, "ai_provider", "river")
             await send_text(client, chat_id, "**River فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "select_provider_radox":
+        if not RADOX_API_KEY:
+            await send_text(client, chat_id, "RadoxAI پیکربندی نشده است؛ RADOX_API_KEY را در Railway Variables قرار بده.", reply_to, ai_provider_markup(user_id))
+        else:
+            set_user_setting(user_id, "ai_provider", "radox")
+            await send_text(client, chat_id, "**RadoxAI فعال شد**\n\nپیام بعدی‌ات با این ارائه‌دهنده پاسخ داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "toggle_provider_fallback":
         current = bool(get_user_settings(user_id).get("fallback_on_error", False))
         set_user_setting(user_id, "fallback_on_error", not current)
