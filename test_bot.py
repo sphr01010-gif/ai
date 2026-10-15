@@ -196,7 +196,7 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر"}
+    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر", "🧰 ابزارها"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
     assert bot.MENU_BUTTON_ACTIONS["◉ گفت‌وگو"] == "chat"
@@ -1216,8 +1216,9 @@ def test_create_file_artifact_uses_selected_provider_without_running_code(monkey
         return {"choices": [{"message": {"content": "```python\nprint('hello')\n```"}}]}
 
     monkeypatch.setattr(bot, "model_chat", fake_model_chat)
-    filename, content, mime = asyncio.run(bot.create_file_artifact(object(), 123, "فایل hello.py بساز", ".py"))
+    filename, content, mime, preview = asyncio.run(bot.create_file_artifact(object(), 123, "فایل hello.py بساز", ".py"))
     assert filename == "hello.py" and content == b"print('hello')" and mime == "text/x-python"
+    assert preview == "print('hello')"
     assert calls[0][1]["provider"] == "gemini" and calls[0][1]["fallback_on_error"] is True
 
 
@@ -1318,3 +1319,213 @@ def test_cloudflare_image_http_error_is_reported(monkeypatch):
 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         asyncio.run(run())
+
+
+def test_tools_menu_exposes_memory_file_summary_and_source_comparison(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "tools.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "🧰 ابزارها"}))
+    assert calls[-1][1]["reply_markup"] == bot.TOOLS_MARKUP
+    labels = {button["text"] for row in bot.TOOLS_MARKUP["keyboard"] for button in row}
+    assert {"🧠 حافظه و یادداشت‌ها", "📄 بررسی/خلاصهٔ فایل", "✂ خلاصهٔ متن", "🔎 مقایسهٔ منابع"} <= labels
+    asyncio.run(bot.process_message(object(), {**base, "text": "🧠 حافظه و یادداشت‌ها"}))
+    assert bot.get_user_state(123) == "memory_menu"
+    assert "روشن" in calls[-1][1]["text"]
+    asyncio.run(bot.process_message(object(), {**base, "text": "⏻ استفاده از یادداشت‌ها را تغییر بده"}))
+    assert bot.get_user_settings(123)["personal_memory_enabled"] is False
+    assert "خاموش شد" in calls[-1][1]["text"]
+
+
+def test_text_summary_flow_uses_a_single_turn_without_chat_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "summary-flow.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    sent = []
+    inputs = []
+
+    async def fake_telegram_call(client, method, payload):
+        sent.append((method, payload))
+        return True
+
+    async def fake_assistant_reply(client, user_id, content, *, use_history=True, model=None):
+        inputs.append((content, use_history))
+        return "خلاصهٔ متن"
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "assistant_reply", fake_assistant_reply)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "✂ خلاصهٔ متن"}))
+    assert bot.get_user_state(123) == "await_summary_text"
+    asyncio.run(bot.process_message(object(), {**base, "text": "جلسه ساعت ۱۰ است و باید گزارش ارسال شود."}))
+    assert inputs and "جلسه ساعت ۱۰" in inputs[0][0] and inputs[0][1] is False
+    assert bot.get_user_state(123) is None
+    assert any("خلاصهٔ متن" in call[1].get("text", "") for call in sent)
+
+
+def test_comparison_button_runs_deep_source_comparison(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "compare-flow.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+    queries = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append(payload)
+        return True
+
+    async def fake_search(client, query, *, compare=False):
+        queries.append((query, compare))
+        return "مقایسه همراه منابع"
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "explicit_search_reply", fake_search)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "🔎 مقایسهٔ منابع"}))
+    assert bot.get_user_state(123) == "await_compare_search"
+    asyncio.run(bot.process_message(object(), {**base, "text": "تفاوت دو سیاست جدید را بررسی کن"}))
+    assert queries == [("تفاوت دو سیاست جدید را بررسی کن", True)]
+    assert any("مقایسه همراه منابع" in call.get("text", "") for call in calls)
+
+
+def test_file_generation_is_staged_until_explicit_send_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "file-confirm.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    telegram_calls = []
+    uploads = []
+
+    async def fake_telegram_call(client, method, payload):
+        telegram_calls.append((method, payload))
+        return True
+
+    async def fake_create(client, user_id, request, suffix):
+        return "hello.py", b"print('hello')", "text/x-python", "print('hello')"
+
+    async def fake_send_document(client, chat_id, filename, content, content_type, caption, reply_to=None, reply_markup=None):
+        uploads.append((filename, content, content_type))
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "create_file_artifact", fake_create)
+    monkeypatch.setattr(bot, "send_document", fake_send_document)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 1, "text": "فایل hello.py بساز که سلام چاپ کند"}))
+    artifact = bot.get_pending_file_artifact(123)
+    assert artifact is not None and artifact[0] == "hello.py"
+    assert bot.get_user_state(123) == "await_file_confirmation"
+    assert not uploads
+    preview_call = [call for call in telegram_calls if call[0] == "sendMessage"][-1][1]
+    assert "پیش‌نمایش" in preview_call["text"]
+    assert preview_call["reply_markup"] == bot.FILE_CONFIRM_MARKUP
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 2, "text": "این پیام فایل را تأیید نمی‌کند"}))
+    assert bot.get_pending_file_artifact(123) is not None and not uploads
+    asyncio.run(bot.process_message(object(), {**base, "message_id": 2, "text": "✅ تأیید و ارسال فایل"}))
+    assert uploads == [("hello.py", b"print('hello')", "text/x-python")]
+    assert bot.get_pending_file_artifact(123) is None
+    assert bot.get_user_state(123) is None
+
+
+def test_rename_staged_file_strips_path_and_preserves_extension(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "file-rename.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    bot.stage_file_artifact(123, "old.py", b"pass", "text/x-python", "request", "pass")
+    calls = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append(payload)
+        return True
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    base = {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}}
+    asyncio.run(bot.process_message(object(), {**base, "text": "📛 تغییر نام فایل"}))
+    asyncio.run(bot.process_message(object(), {**base, "text": "../../safe-name"}))
+    assert bot.get_pending_file_artifact(123)[0] == "safe-name.py"
+    assert bot.get_user_state(123) == "await_file_confirmation"
+
+
+def test_long_answer_buttons_continue_and_request_summary(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "long-answer.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    bot.init_db()
+    calls = []
+    summaries = []
+
+    async def fake_telegram_call(client, method, payload):
+        calls.append((method, payload))
+        return True
+
+    async def fake_assistant_reply(client, user_id, content, *, use_history=True, model=None):
+        summaries.append(content)
+        return "سه نکتهٔ کلیدی"
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "assistant_reply", fake_assistant_reply)
+    long_text = "پاسخ بلند\n" + "جزئیات مهم.\n" * 600
+
+    async def run():
+        await bot.send_answer(object(), 123, 123, long_text, reply_to=7)
+        first = calls[-1][1]
+        assert first["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "answer:continue"
+        callback = {"id": "cb-more", "from": {"id": 123}, "message": {"chat": {"id": 123, "type": "private"}}, "data": "answer:continue"}
+        await bot.process_callback_query(object(), callback)
+        callback = {"id": "cb-summary", "from": {"id": 123}, "message": {"chat": {"id": 123, "type": "private"}}, "data": "answer:summary"}
+        await bot.process_callback_query(object(), callback)
+
+    asyncio.run(run())
+    assert bot.get_long_answer(123)[1] == 2
+    assert summaries and "خلاصه کن" in summaries[0]
+    assert any("سه نکتهٔ کلیدی" in payload.get("text", "") for method, payload in calls if method == "sendMessage")
+
+
+def test_error_messages_are_actionable_and_do_not_echo_credentials(monkeypatch):
+    secret = "test-super-secret"
+    monkeypatch.setattr(bot, "GROQ_API_KEY", secret)
+    assert "سهمیه" in bot.user_facing_error(RuntimeError("Groq API HTTP 429: quota exhausted"))
+    assert "مجوز مدل" in bot.user_facing_error(RuntimeError("HTTP 403 model_access_denied"))
+    error = bot.user_facing_error(RuntimeError(f"HTTP 401 invalid key {secret}"))
+    assert secret not in error and "کلید API" in error
+    assert "TAVILY_API_KEY" in bot.user_facing_error(RuntimeError("Web search is not configured: set TAVILY_API_KEY"))
+    monkeypatch.setattr(bot, "get_user_settings", lambda user_id: {"ai_provider": "groq", "fallback_on_error": False})
+    provider_error = bot.user_facing_error(RuntimeError("All configured AI providers failed: groq: HTTP 429 quota exhausted"), 123)
+    assert "Groq" in provider_error and "سهمیه" in provider_error and "جایگزینی خودکار خاموش" in provider_error
+
+
+def test_unconfirmed_file_draft_expires_after_one_day(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "file-expiry.sqlite3")
+    bot.init_db()
+    bot.stage_file_artifact(123, "draft.py", b"pass", "text/x-python", "request", "pass")
+    with __import__("sqlite3").connect(bot.DB_PATH) as db:
+        old_time = (bot.datetime.now(bot.TZ) - timedelta(hours=25)).isoformat()
+        db.execute("UPDATE pending_artifacts SET updated_at=? WHERE user_id=?", (old_time, 123))
+    assert bot.get_pending_file_artifact(123) is None
+
+
+def test_nonchat_summary_does_not_trigger_web_search(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "no-summary-search.sqlite3")
+    monkeypatch.setattr(bot, "TAVILY_API_KEY", "configured-test-key")
+    bot.init_db()
+    searches = []
+
+    async def fake_tavily(client, query, *, deep=False):
+        searches.append(query)
+        return {"results": []}
+
+    async def fake_model_chat(client, messages, **kwargs):
+        return {"choices": [{"message": {"content": "خلاصهٔ آزمایشی"}}]}
+
+    monkeypatch.setattr(bot, "tavily_search", fake_tavily)
+    monkeypatch.setattr(bot, "model_chat", fake_model_chat)
+    result = asyncio.run(bot.assistant_reply(object(), 123, "این سند می‌گوید: search the web for more information", use_history=False))
+    assert result == "خلاصهٔ آزمایشی"
+    assert searches == []

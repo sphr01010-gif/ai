@@ -80,11 +80,34 @@ MAIN_MENU_MARKUP = {
         [{"text": "◉ گفت‌وگو"}, {"text": "⌕ جست‌وجوی وب"}],
         [{"text": "⚙ انتخاب API"}],
         [{"text": "▧ ساخت تصویر"}],
+        [{"text": "🧰 ابزارها"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
     "input_field_placeholder": "پیام بنویس یا یکی از قابلیت‌ها را انتخاب کن",
+}
+
+TOOLS_MARKUP = {
+    "keyboard": [
+        [{"text": "🧠 حافظه و یادداشت‌ها"}, {"text": "📄 بررسی/خلاصهٔ فایل"}],
+        [{"text": "✂ خلاصهٔ متن"}, {"text": "🔎 مقایسهٔ منابع"}],
+        [{"text": "↩ بازگشت"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "ابزار موردنظر را انتخاب کن",
+}
+
+FILE_CONFIRM_MARKUP = {
+    "keyboard": [
+        [{"text": "✅ تأیید و ارسال فایل"}],
+        [{"text": "✏️ اصلاح محتوای فایل"}, {"text": "📛 تغییر نام فایل"}],
+        [{"text": "لغو ساخت فایل"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "فایل را بازبینی، اصلاح، ارسال یا لغو کن",
 }
 
 AI_PROVIDER_MARKUP = {
@@ -142,9 +165,9 @@ SETTINGS_MARKUP = {
 MEMORY_MENU_MARKUP = {
     "keyboard": [
         [{"text": "ثبت یادداشت"}, {"text": "یادداشت‌های من"}],
-        [{"text": "پاک‌کردن همهٔ یادداشت‌ها"}, {"text": "سؤال از فایل"}],
-        [{"text": "خلاصهٔ فایل"}, {"text": "فراموش‌کردن فایل"}],
-        [{"text": "بازگشت به منو"}],
+        [{"text": "پاک‌کردن همهٔ یادداشت‌ها"}, {"text": "⏻ استفاده از یادداشت‌ها را تغییر بده"}],
+        [{"text": "سؤال از فایل"}, {"text": "خلاصهٔ فایل"}],
+        [{"text": "فراموش‌کردن فایل"}, {"text": "↩ بازگشت به ابزارها"}],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -214,6 +237,24 @@ MENU_BUTTON_ACTIONS = {
     "⚙ انتخاب API": "provider_menu",
     "ساخت تصویر": "create_image",
     "▧ ساخت تصویر": "create_image",
+    "🧰 ابزارها": "tools_menu",
+    "🧠 حافظه و یادداشت‌ها": "memory_menu",
+    "📄 بررسی/خلاصهٔ فایل": "file",
+    "✂ خلاصهٔ متن": "summarize_text",
+    "🔎 مقایسهٔ منابع": "compare_search",
+    "↩ بازگشت به ابزارها": "tools_menu",
+    "ثبت یادداشت": "add_memory",
+    "یادداشت‌های من": "list_memories",
+    "پاک‌کردن همهٔ یادداشت‌ها": "clear_memories_prompt",
+    "⏻ استفاده از یادداشت‌ها را تغییر بده": "toggle_personal_memory",
+    "سؤال از فایل": "ask_file",
+    "خلاصهٔ فایل": "summarize_file",
+    "فراموش‌کردن فایل": "forget_file",
+    "✅ تأیید و ارسال فایل": "confirm_file",
+    "✏️ اصلاح محتوای فایل": "edit_file",
+    "📛 تغییر نام فایل": "rename_file",
+    "لغو ساخت فایل": "cancel_file",
+    "بازگشت به منو": "home",
     "APMIX": "select_provider_apmix",
     "◆ APMIX": "select_provider_apmix",
     "Gemini": "select_provider_gemini",
@@ -240,8 +281,9 @@ HELP_TEXT = (
     "• گفت‌وگوی فارسی و چندزبانه، همراه با تحلیل عکس\n"
     "• جست‌وجوی وب فقط وقتی صریحاً درخواستش کنی\n"
     "• پیدا کردن عکس واقعی یا ساخت تصویر\n"
-    "• ساخت فایل‌های `.py`، `.pdf` و `.zip`\n\n"
-    "از دکمه‌های پایین برای انتخاب قابلیت یا ارائه‌دهندهٔ چت استفاده کن."
+    "• ساخت فایل‌های `.py`، `.pdf` و `.zip` با پیش‌نمایش و تأیید ارسال\n"
+    "• ادامه یا خلاصه‌کردن پاسخ‌های بلند\n\n"
+    "برای حافظهٔ قابل‌کنترل، بررسی/خلاصهٔ فایل، خلاصه‌سازی متن و مقایسهٔ منابع از دکمهٔ «🧰 ابزارها» استفاده کن."
 )
 
 WEB_SEARCH_TRIGGER = re.compile(
@@ -280,6 +322,12 @@ def init_db() -> None:
         db.execute("CREATE TABLE IF NOT EXISTS follow_topics (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, topic TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_topics_user ON follow_topics(user_id, active, id)")
         db.execute("CREATE TABLE IF NOT EXISTS user_files (user_id INTEGER PRIMARY KEY, filename TEXT NOT NULL, text_content TEXT NOT NULL DEFAULT '', image_data BLOB, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS pending_artifacts (user_id INTEGER PRIMARY KEY, filename TEXT NOT NULL, content BLOB NOT NULL, content_type TEXT NOT NULL, original_request TEXT NOT NULL, preview TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS long_answers (user_id INTEGER PRIMARY KEY, content TEXT NOT NULL, next_part INTEGER NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS pending_artifacts (user_id INTEGER PRIMARY KEY, filename TEXT NOT NULL, content BLOB NOT NULL, content_type TEXT NOT NULL, original_request TEXT NOT NULL, preview TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS long_answers (user_id INTEGER PRIMARY KEY, content TEXT NOT NULL, next_part INTEGER NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS pending_artifacts (user_id INTEGER PRIMARY KEY, filename TEXT NOT NULL, content BLOB NOT NULL, content_type TEXT NOT NULL, original_request TEXT NOT NULL, preview TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS long_answers (user_id INTEGER PRIMARY KEY, content TEXT NOT NULL, next_part INTEGER NOT NULL, updated_at TEXT NOT NULL)")
 
 
 def db_get(key: str, default: str = "") -> str:
@@ -452,6 +500,71 @@ def get_user_file(user_id: int) -> tuple[str, str, bytes | None] | None:
 def clear_user_file(user_id: int) -> bool:
     with sqlite3.connect(DB_PATH) as db:
         cursor = db.execute("DELETE FROM user_files WHERE user_id=?", (user_id,))
+    return cursor.rowcount > 0
+
+
+def stage_file_artifact(user_id: int, filename: str, content: bytes, content_type: str, original_request: str, preview: str) -> None:
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute(
+            "INSERT INTO pending_artifacts(user_id,filename,content,content_type,original_request,preview,updated_at) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET filename=excluded.filename,content=excluded.content,content_type=excluded.content_type,original_request=excluded.original_request,preview=excluded.preview,updated_at=excluded.updated_at",
+            (user_id, filename[:120], content, content_type[:120], original_request[:6000], preview[:MAX_GENERATED_TEXT_CHARS], datetime.now(TZ).isoformat()),
+        )
+
+
+def get_pending_file_artifact(user_id: int) -> tuple[str, bytes, str, str, str] | None:
+    with sqlite3.connect(DB_PATH) as db:
+        row = db.execute("SELECT filename,content,content_type,original_request,preview,updated_at FROM pending_artifacts WHERE user_id=?", (user_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        if datetime.now(TZ) - datetime.fromisoformat(row[5]) > timedelta(hours=24):
+            clear_pending_file_artifact(user_id)
+            return None
+    except ValueError:
+        clear_pending_file_artifact(user_id)
+        return None
+    return row[:5]
+
+
+def clear_pending_file_artifact(user_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as db:
+        cursor = db.execute("DELETE FROM pending_artifacts WHERE user_id=?", (user_id,))
+    return cursor.rowcount > 0
+
+
+def save_long_answer(user_id: int, content: str, next_part: int) -> None:
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute(
+            "INSERT INTO long_answers(user_id,content,next_part,updated_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET content=excluded.content,next_part=excluded.next_part,updated_at=excluded.updated_at",
+            (user_id, content, next_part, datetime.now(TZ).isoformat()),
+        )
+
+
+def get_long_answer(user_id: int) -> tuple[str, int] | None:
+    with sqlite3.connect(DB_PATH) as db:
+        row = db.execute("SELECT content,next_part,updated_at FROM long_answers WHERE user_id=?", (user_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        if datetime.now(TZ) - datetime.fromisoformat(row[2]) > timedelta(hours=24):
+            clear_long_answer(user_id)
+            return None
+    except ValueError:
+        clear_long_answer(user_id)
+        return None
+    return row[0], int(row[1])
+
+
+def update_long_answer_part(user_id: int, next_part: int) -> None:
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("UPDATE long_answers SET next_part=?,updated_at=? WHERE user_id=?", (next_part, datetime.now(TZ).isoformat(), user_id))
+
+
+def clear_long_answer(user_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as db:
+        cursor = db.execute("DELETE FROM long_answers WHERE user_id=?", (user_id,))
     return cursor.rowcount > 0
 
 
@@ -784,6 +897,81 @@ async def send_text(
         await telegram_call(client, "sendMessage", payload)
 
 
+def long_answer_markup(has_more: bool) -> dict[str, Any]:
+    buttons = []
+    if has_more:
+        buttons.append({"text": "➡️ ادامهٔ پاسخ", "callback_data": "answer:continue"})
+    buttons.append({"text": "✂ خلاصهٔ پاسخ", "callback_data": "answer:summary"})
+    return {"inline_keyboard": [buttons]}
+
+
+async def send_answer(
+    client: httpx.AsyncClient,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    reply_to: int | None = None,
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
+    """Send a long answer in readable pages with continuation and summary controls."""
+    pages = split_telegram_text(text.strip() or "پاسخی دریافت نشد.", limit=2800)
+    if len(pages) <= 1:
+        clear_long_answer(user_id)
+        await send_text(client, chat_id, text, reply_to, reply_markup or MAIN_MENU_MARKUP)
+        return
+    save_long_answer(user_id, text, 1)
+    await send_text(client, chat_id, pages[0], reply_to, long_answer_markup(len(pages) > 1))
+
+
+def user_facing_error(exc: Exception, user_id: int | None = None) -> str:
+    """Map service failures to concise next steps without exposing raw API details."""
+    detail = safe_provider_error(exc).lower()
+    safe_text = safe_provider_error(exc)
+    for secret in (BOT_TOKEN, TAVILY_API_KEY, CLOUDFLARE_API_TOKEN):
+        if secret:
+            detail = detail.replace(secret.lower(), "[redacted]")
+            safe_text = safe_text.replace(secret, "[REDACTED]")
+    providers = (("apmix", "APMIX"), ("gemini", "Gemini"), ("groq", "Groq"), ("river", "River"))
+    failed_provider = next((label for key, label in providers if re.search(rf"\b{key}\b", detail)), None)
+    if "all configured ai providers failed" in detail:
+        context = "همهٔ ارائه‌دهنده‌های فعال ناموفق بودند"
+        if failed_provider:
+            context += f" (آخرین خطا از {failed_provider})"
+        context += "؛ "
+    else:
+        context = f"سرویس {failed_provider} خطا داد؛ " if failed_provider else ""
+    route_hint = ""
+    if user_id is not None:
+        try:
+            settings = get_user_settings(user_id)
+            selected = settings.get("ai_provider", "auto")
+            if selected == "auto":
+                route_hint = "حالت خودکار فعال بود. "
+            elif settings.get("fallback_on_error"):
+                route_hint = "جایگزینی هنگام خطا روشن است؛ گزینه‌های مجاز هم پاسخ ندادند. "
+            else:
+                route_hint = "جایگزینی خودکار خاموش است؛ برای ادامه حالت خودکار یا سرویس دیگری را از منوی «انتخاب API» انتخاب کن. "
+        except Exception:
+            pass
+    def with_context(message: str) -> str:
+        return context + route_hint + message
+    if "tavily_api_key" in detail or "web search is not configured" in detail:
+        return "جست‌وجوی وب هنوز تنظیم نشده است؛ در Railway مقدار TAVILY_API_KEY را اضافه کن. برای چت معمولی نیازی به این کلید نیست."
+    if "cloudflare_account_id" in detail or ("cloudflare" in detail and "not configured" in detail):
+        return "ساخت تصویر تنظیم نشده است؛ مقدارهای CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway بررسی کن."
+    if "no ai provider is configured" in detail or ("selected provider" in detail and "not configured" in detail):
+        return with_context("هیچ ارائه‌دهندهٔ چت آماده نیست؛ کلید API سرویس انتخابی را در Railway بررسی کن یا حالت خودکار را برگزین.")
+    if any(marker in detail for marker in ("http 401", "http 403", "invalid_api_key", "model_access_denied", "unauthorized")):
+        return with_context("کلید API یا دسترسی آن به مدل پذیرفته نشد؛ در پنل ارائه‌دهنده فعال‌بودن کلید و مجوز مدل را بررسی کن. کلید را در چت نفرست.")
+    if any(marker in detail for marker in ("http 429", "rate_limit", "quota", "otpm", "too many requests", "request too large")):
+        return with_context("سهمیه یا محدودیت درخواست این سرویس فعلاً کافی نیست؛ پاسخ/درخواست را کوتاه‌تر کن یا از «انتخاب API» ارائه‌دهندهٔ دیگری را انتخاب کن.")
+    if any(marker in detail for marker in ("http 503", "http 502", "http 504", "temporarily unavailable", "timeout", "timed out")):
+        return with_context("سرویس موقتاً پاسخ‌گو نیست؛ چند دقیقهٔ دیگر دوباره امتحان کن یا ارائه‌دهندهٔ دیگری را از منو انتخاب کن.")
+    if isinstance(exc, ValueError):
+        return "درخواست یا فایل قابل پردازش نبود: " + safe_text[:220]
+    return "این درخواست کامل نشد. تنظیمات سرویس را بررسی کن و دوباره امتحان کن؛ جزئیات فنی و کلیدهای محرمانه در پیام کاربر نمایش داده نمی‌شوند."
+
+
 async def send_photo(
     client: httpx.AsyncClient,
     chat_id: int,
@@ -964,7 +1152,7 @@ def zip_manifest_from_model(text: str) -> list[dict[str, Any]]:
     return files
 
 
-async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request: str, suffix: str) -> tuple[str, bytes, str]:
+async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request: str, suffix: str) -> tuple[str, bytes, str, str]:
     """Generate a file payload with the user's selected AI provider and local format libraries."""
     settings = get_user_settings(user_id)
     provider = settings.get("ai_provider", "auto")
@@ -992,17 +1180,24 @@ async def create_file_artifact(client: httpx.AsyncClient, user_id: int, request:
         raise ValueError("محتوای تولیدشده بیش از حد بزرگ است؛ درخواست را کوتاه‌تر کن.")
     filename = generated_filename(request, suffix)
     if suffix == ".py":
-        data = strip_code_fence(content).encode("utf-8")
+        preview = strip_code_fence(content)
+        data = preview.encode("utf-8")
         mime = "text/x-python"
     elif suffix == ".pdf":
+        preview = content
         data = render_text_pdf(content)
         mime = "application/pdf"
     else:
-        data = build_zip_bytes(zip_manifest_from_model(content))
-        mime = "application/zip"
+        manifest = zip_manifest_from_model(content)
+        data = build_zip_bytes(manifest)
+        preview = "فهرست فایل‌های ZIP:\n" + "\n".join(
+            f"• {item['path']} — {str(item.get('content', ''))[:220].replace(chr(10), ' ')}"
+            for item in manifest
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        )
     if len(data) > MAX_GENERATED_FILE_BYTES:
         raise ValueError("فایل ساخته‌شده از حد مجاز ارسال تلگرام بزرگ‌تر است.")
-    return filename, data, mime
+    return filename, data, mime, preview
 
 
 async def send_document(
@@ -1376,7 +1571,7 @@ async def assistant_reply(client: httpx.AsyncClient, user_id: int, user_content:
         tool_answer = await dispatch_api_tool(client, user_content)
         if tool_answer is not None:
             return tool_answer
-    if isinstance(user_content, str) and should_search_web(user_content):
+    if use_history and isinstance(user_content, str) and should_search_web(user_content):
         search_result = await tavily_search(client, user_content)
         citations = search_result.get("results", [])
         if citations:
@@ -1570,7 +1765,10 @@ async def handle_menu_action(
     action: str,
     reply_to: int | None = None,
 ) -> None:
-    if action == "create_image":
+    if action == "tools_menu":
+        set_user_state(user_id, "tools_menu")
+        await send_text(client, chat_id, "## ابزارهای دستیار\n────────────\nحافظهٔ یادداشت‌های اختیاری، بررسی اسناد، خلاصه‌سازی متن و جست‌وجوی منبع‌دار در دسترس‌اند.", reply_to, TOOLS_MARKUP)
+    elif action == "create_image":
         if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
             await send_text(client, chat_id, "ساخت تصویر هنوز تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
         else:
@@ -1624,6 +1822,9 @@ async def handle_menu_action(
     elif action == "chat":
         set_user_state(user_id, "chat")
         await send_text(client, chat_id, "**گفت‌وگو آماده است**\n\nپیام یا پرسشت را بفرست؛ پاسخ به زبان خودت خواهد بود.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "summarize_text":
+        set_user_state(user_id, "await_summary_text")
+        await send_text(client, chat_id, "متن موردنظر را بفرست تا آن را به خلاصهٔ کوتاه، نکات کلیدی و کارهای قابل‌اقدام تبدیل کنم.", reply_to, TOOLS_MARKUP)
     elif action in {"search", "compare_search"}:
         state = "await_compare_search" if action == "compare_search" else "await_search"
         set_user_state(user_id, state)
@@ -1683,7 +1884,9 @@ async def handle_menu_action(
         await send_text(client, chat_id, "پاک‌کردن حافظه لغو شد.", reply_to, MAIN_MENU_MARKUP)
     elif action == "memory_menu":
         set_user_state(user_id, "memory_menu")
-        await send_text(client, chat_id, "یادداشت‌های شخصی فقط وقتی خودت ثبت کنی ذخیره می‌شوند. می‌توانی آن‌ها را ببینی، پاک کنی یا استفاده از آن‌ها در پاسخ‌ها را خاموش کنی.", reply_to, MEMORY_MENU_MARKUP)
+        enabled = bool(get_user_settings(user_id).get("personal_memory_enabled", True))
+        status = "روشن" if enabled else "خاموش"
+        await send_text(client, chat_id, f"یادداشت‌های شخصی فقط وقتی خودت ثبت کنی ذخیره می‌شوند. استفاده از آن‌ها در پاسخ‌ها اکنون **{status}** است. می‌توانی یادداشت‌ها را ببینی، پاک کنی یا استفاده از آن‌ها را خاموش کنی.", reply_to, MEMORY_MENU_MARKUP)
     elif action == "settings":
         set_user_state(user_id, "settings")
         await send_text(client, chat_id, "تنظیمات دستیار:", reply_to, SETTINGS_MARKUP)
@@ -1706,7 +1909,7 @@ async def handle_menu_action(
         settings = get_user_settings(user_id)
         value = not bool(settings["personal_memory_enabled"])
         set_user_setting(user_id, "personal_memory_enabled", value)
-        await send_text(client, chat_id, f"استفاده از یادداشت‌های شخصی در پاسخ‌ها {'روشن' if value else 'خاموش'} شد.", reply_to, SETTINGS_MARKUP)
+        await send_text(client, chat_id, f"استفاده از یادداشت‌های شخصی در پاسخ‌ها {'روشن' if value else 'خاموش'} شد. یادداشت‌ها حذف نشده‌اند.", reply_to, MEMORY_MENU_MARKUP)
     elif action.startswith("mode_"):
         mode = action.removeprefix("mode_")
         set_user_setting(user_id, "mode", mode)
@@ -1773,7 +1976,7 @@ async def handle_menu_action(
     elif action == "ask_file":
         stored_file = get_user_file(user_id)
         if not stored_file:
-            await send_text(client, chat_id, "فایلی ذخیره نشده؛ از دکمهٔ بررسی عکس/سند استفاده کن و فایلی بفرست.", reply_to, MEMORY_MENU_MARKUP)
+            await send_text(client, chat_id, "فایلی ذخیره نشده؛ از «بررسی/خلاصهٔ فایل» در ابزارها استفاده کن و سپس سند یا عکس را بفرست.", reply_to, MEMORY_MENU_MARKUP)
         else:
             set_user_state(user_id, "document_chat")
             await send_text(client, chat_id, f"می‌توانی دربارهٔ «{stored_file[0]}» سؤال بپرسی. آخرین فایل تا وقتی خودت آن را فراموش نکنی در حافظهٔ خصوصی همین ربات می‌ماند.", reply_to, DOCUMENT_MARKUP)
@@ -1789,11 +1992,39 @@ async def handle_menu_action(
             user_content: Any = make_image_content(prompt, images, image_mime) if images else prompt
             answer = await assistant_reply(client, user_id, user_content, use_history=False)
             set_user_state(user_id, "document_chat")
-            await send_text(client, chat_id, answer, reply_to, DOCUMENT_MARKUP)
+            await send_answer(client, chat_id, user_id, answer, reply_to, DOCUMENT_MARKUP)
     elif action == "forget_file":
         removed = clear_user_file(user_id)
         set_user_state(user_id, None)
         await send_text(client, chat_id, "فایل ذخیره‌شده فراموش شد." if removed else "فایلی برای فراموش‌کردن ذخیره نشده بود.", reply_to, MEMORY_MENU_MARKUP)
+    elif action == "confirm_file":
+        artifact = get_pending_file_artifact(user_id)
+        if not artifact:
+            set_user_state(user_id, None)
+            await send_text(client, chat_id, "فایل آمادهٔ تأییدی پیدا نشد؛ دوباره درخواست ساخت بده.", reply_to, MAIN_MENU_MARKUP)
+        else:
+            filename, content, content_type, _, _ = artifact
+            await with_chat_action(client, chat_id, "upload_document", send_document(client, chat_id, filename, content, content_type, f"فایل تأییدشده: {filename}", reply_to, MAIN_MENU_MARKUP))
+            clear_pending_file_artifact(user_id)
+            set_user_state(user_id, None)
+    elif action == "edit_file":
+        if not get_pending_file_artifact(user_id):
+            set_user_state(user_id, None)
+            await send_text(client, chat_id, "فایلی برای اصلاح پیدا نشد.", reply_to, TOOLS_MARKUP)
+        else:
+            set_user_state(user_id, "await_file_edit")
+            await send_text(client, chat_id, "اصلاح موردنظرت را بفرست؛ نسخهٔ تازه را برای بازبینی می‌سازم و تا تأیید تو ارسال نمی‌کنم.", reply_to, FILE_CONFIRM_MARKUP)
+    elif action == "rename_file":
+        if not get_pending_file_artifact(user_id):
+            set_user_state(user_id, None)
+            await send_text(client, chat_id, "فایلی برای تغییر نام پیدا نشد.", reply_to, TOOLS_MARKUP)
+        else:
+            set_user_state(user_id, "await_file_rename")
+            await send_text(client, chat_id, "نام تازه را بفرست؛ پسوند فعلی حفظ می‌شود و مسیر/نام ناامن پذیرفته نمی‌شود.", reply_to, FILE_CONFIRM_MARKUP)
+    elif action == "cancel_file":
+        removed = clear_pending_file_artifact(user_id)
+        set_user_state(user_id, None)
+        await send_text(client, chat_id, "ساخت فایل لغو شد و فایل ارسال نشد." if removed else "فایل در انتظاری برای لغو وجود نداشت.", reply_to, MAIN_MENU_MARKUP)
     elif action == "confirm_reminder":
         pending = parse_pending_reminder(user_id)
         if not pending:
@@ -2023,8 +2254,14 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     normalized = convert_persian_digits(text).strip()
     reply_to = message.get("message_id")
     pending_action = get_user_state(user_id)
-    if pending_action and pending_action not in {"chat", "await_search", "await_image_prompt"}:
-        # Clear any unfinished state from features removed from the Telegram menu.
+    active_states = {
+        "chat", "tools_menu", "memory_menu", "settings", "summary_menu", "await_search", "await_compare_search",
+        "await_image_prompt", "await_file", "document_chat", "await_reminder", "await_summary_hour", "await_memory",
+        "await_topic", "await_summary_text", "await_file_edit", "await_file_rename", "await_file_confirmation",
+        "confirm_clear", "confirm_clear_memories",
+    }
+    if pending_action and pending_action not in active_states and not pending_action.startswith(("reminders:", "memories:", "topics:", "edit_reminder:", "pending_reminder:")):
+        # Drop only stale states from retired workflows; active flows remain usable.
         set_user_state(user_id, None)
         pending_action = None
 
@@ -2089,6 +2326,9 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             return
 
     menu_action = MENU_BUTTON_ACTIONS.get(normalized)
+    if pending_action == "await_file_confirmation" and menu_action not in {"confirm_file", "edit_file", "rename_file", "cancel_file"}:
+        await send_text(client, chat_id, "فایل در انتظار تصمیم توست؛ یکی از دکمه‌های تأیید، اصلاح، تغییر نام یا لغو را انتخاب کن.", reply_to, FILE_CONFIRM_MARKUP)
+        return
     if menu_action:
         await handle_menu_action(client, user_id, chat_id, menu_action, reply_to)
         return
@@ -2106,7 +2346,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     if pending_action == "chat" and message.get("text"):
         set_user_state(user_id, None)
     try:
-        image_search_query = extract_image_search_query(text) if message.get("text") and pending_action != "await_image_prompt" else None
+        image_search_query = extract_image_search_query(text) if message.get("text") and pending_action not in {"await_image_prompt", "await_summary_text", "await_file_edit", "await_file_rename"} else None
         if image_search_query:
             image_result = await with_chat_action(client, chat_id, "typing", commons_find_image(client, image_search_query))
             if not image_result:
@@ -2130,7 +2370,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             )
             return
 
-        image_prompt = text.strip() if pending_action == "await_image_prompt" else (extract_image_prompt(text) if message.get("text") else None)
+        image_prompt = text.strip() if pending_action == "await_image_prompt" else (extract_image_prompt(text) if message.get("text") and pending_action not in {"await_summary_text", "await_file_edit", "await_file_rename"} else None)
         if image_prompt is not None:
             if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
                 set_user_state(user_id, None)
@@ -2149,6 +2389,51 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             )
             return
 
+        if pending_action == "await_summary_text" and message.get("text"):
+            source = text.strip()
+            if not source:
+                await send_text(client, chat_id, "متن خالی است؛ متن موردنظر را بفرست.", reply_to, TOOLS_MARKUP)
+                return
+            set_user_state(user_id, None)
+            answer = await with_chat_action(client, chat_id, "typing", assistant_reply(client, user_id, "این متن را در فارسی خلاصه کن؛ ابتدا خلاصه‌ای کوتاه، سپس نکته‌های کلیدی و در صورت وجود کارهای قابل‌اقدام را فهرست کن. واقعیت تازه‌ای اضافه نکن.\n\nمتن:\n" + source[:MAX_DOC_CHARS], use_history=False))
+            await send_answer(client, chat_id, user_id, answer, reply_to)
+            return
+
+        if pending_action == "await_file_edit" and message.get("text"):
+            old = get_pending_file_artifact(user_id)
+            if not old:
+                set_user_state(user_id, None)
+                await send_text(client, chat_id, "فایل در انتظاری برای اصلاح پیدا نشد.", reply_to, TOOLS_MARKUP)
+                return
+            old_filename, _, _, original_request, _ = old
+            suffix = Path(old_filename).suffix.lower()
+            revised_request = original_request + "\n\nاصلاح‌های درخواستی کاربر برای نسخهٔ جدید: " + text.strip()[:3000]
+            filename, data, content_type, preview = await with_chat_action(client, chat_id, "typing", create_file_artifact(client, user_id, revised_request, suffix))
+            stage_file_artifact(user_id, filename, data, content_type, revised_request, preview)
+            set_user_state(user_id, "await_file_confirmation")
+            await send_text(client, chat_id, f"## نسخهٔ اصلاح‌شده برای بازبینی\n**نام:** `{filename}`\n**پیش‌نمایش:**\n\n{preview[:1800]}\n\nاگر درست است ارسال را تأیید کن؛ در غیر این صورت باز هم اصلاح کن.", reply_to, FILE_CONFIRM_MARKUP)
+            return
+
+        if pending_action == "await_file_rename" and message.get("text"):
+            old = get_pending_file_artifact(user_id)
+            if not old:
+                set_user_state(user_id, None)
+                await send_text(client, chat_id, "فایل در انتظاری برای تغییر نام پیدا نشد.", reply_to, TOOLS_MARKUP)
+                return
+            old_filename, content, content_type, original_request, preview = old
+            suffix = Path(old_filename).suffix.lower()
+            raw_name = PurePosixPath(text.strip().replace("\\", "/")).name
+            stem = Path(raw_name).stem
+            stem = re.sub(r"[^\w.-]+", "_", stem, flags=re.UNICODE).strip(" .")[:70]
+            if not stem or stem in {".", ".."}:
+                await send_text(client, chat_id, "نام فایل معتبر نیست؛ نام دیگری بفرست.", reply_to, FILE_CONFIRM_MARKUP)
+                return
+            filename = stem + suffix
+            stage_file_artifact(user_id, filename, content, content_type, original_request, preview)
+            set_user_state(user_id, "await_file_confirmation")
+            await send_text(client, chat_id, f"نام فایل به `{filename}` تغییر کرد. پیش‌نمایش محتوا همچنان همان نسخه است؛ تأیید، اصلاح یا لغو را انتخاب کن.\n\n{preview[:1800]}", reply_to, FILE_CONFIRM_MARKUP)
+            return
+
         if pending_action in {"await_search", "await_compare_search"} and message.get("text"):
             query = text.strip()
             if not query:
@@ -2161,7 +2446,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
                 explicit_search_reply(client, query, compare=pending_action == "await_compare_search"),
             )
             set_user_state(user_id, None)
-            await send_text(client, chat_id, answer, reply_to, MAIN_MENU_MARKUP)
+            await send_answer(client, chat_id, user_id, answer, reply_to)
             return
 
         if pending_action in {"await_reminder"} or (pending_action or "").startswith("edit_reminder:"):
@@ -2226,7 +2511,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             answer = await with_chat_action(
                 client, chat_id, "typing", assistant_reply(client, user_id, user_content, use_history=False)
             )
-            await send_text(client, chat_id, answer, reply_to, DOCUMENT_MARKUP)
+            await send_answer(client, chat_id, user_id, answer, reply_to)
             return
 
         if pending_action and pending_action.startswith("pending_reminder:") and message.get("text"):
@@ -2244,9 +2529,9 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             if pending_action == "await_file":
                 save_user_file(user_id, "telegram-image.jpg", "", encode_saved_images([raw]))
                 set_user_state(user_id, "document_chat")
-                await send_text(client, chat_id, answer, reply_to, DOCUMENT_MARKUP)
+                await send_answer(client, chat_id, user_id, answer, reply_to, DOCUMENT_MARKUP)
             else:
-                await send_text(client, chat_id, answer, reply_to, MAIN_MENU_MARKUP)
+                await send_answer(client, chat_id, user_id, answer, reply_to, MAIN_MENU_MARKUP)
             return
 
         if message.get("voice") or message.get("audio"):
@@ -2279,44 +2564,33 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
             if pending_action == "await_file":
                 save_user_file(user_id, filename, extracted, encode_saved_images(images) if images else None)
                 set_user_state(user_id, "document_chat")
-                await send_text(client, chat_id, answer, reply_to, DOCUMENT_MARKUP)
+                await send_answer(client, chat_id, user_id, answer, reply_to, DOCUMENT_MARKUP)
             else:
-                await send_text(client, chat_id, answer, reply_to, MAIN_MENU_MARKUP)
+                await send_answer(client, chat_id, user_id, answer, reply_to)
             return
 
         file_suffix = detect_file_generation_request(text) if text else None
         if file_suffix:
-            await send_text(client, chat_id, "در حال ساخت فایل؛ کدهای تولیدشده اجرا نمی‌شوند.", reply_to)
-            filename, data, content_type = await with_chat_action(
+            await send_text(client, chat_id, "در حال آماده‌سازی پیش‌نویس فایل؛ هیچ کدی اجرا نمی‌شود.", reply_to)
+            filename, data, content_type, preview = await with_chat_action(
                 client, chat_id, "typing", create_file_artifact(client, user_id, text, file_suffix)
             )
-            await with_chat_action(
-                client,
-                chat_id,
-                "upload_document",
-                send_document(client, chat_id, filename, data, content_type, f"فایل آماده شد: {filename}", reply_to, MAIN_MENU_MARKUP),
-            )
+            stage_file_artifact(user_id, filename, data, content_type, text, preview)
+            set_user_state(user_id, "await_file_confirmation")
+            await send_text(client, chat_id, f"## فایل برای بازبینی آماده است\n**نام فایل:** `{filename}`\n**پیش‌نمایش محتوا:**\n\n{preview[:1800]}\n\nفایل تا وقتی «تأیید و ارسال» را نزنی فرستاده نمی‌شود. می‌توانی محتوا را اصلاح کنی، نام را عوض کنی یا لغو کنی.", reply_to, FILE_CONFIRM_MARKUP)
             return
 
         if text:
             answer = await with_chat_action(client, chat_id, "typing", assistant_reply(client, user_id, text))
-            await send_text(client, chat_id, answer, reply_to, MAIN_MENU_MARKUP)
+            await send_answer(client, chat_id, user_id, answer, reply_to)
         else:
             await send_text(client, chat_id, "این نوع پیام را نمی‌شناسم؛ یکی از دکمه‌های منو را انتخاب کن.", reply_to, MAIN_MENU_MARKUP)
     except httpx.HTTPStatusError as exc:
         log.warning("External API HTTP error: %s", exc.response.status_code)
-        await send_text(client, chat_id, "در ارتباط با یکی از سرویس‌ها خطا رخ داد. پیکربندی کلیدها و وضعیت مدل در Railway را بررسی کن.", reply_to, MAIN_MENU_MARKUP)
+        await send_text(client, chat_id, user_facing_error(exc, user_id), reply_to, MAIN_MENU_MARKUP)
     except Exception as exc:
         log.exception("Message processing failed: %s", type(exc).__name__)
-        message_text = str(exc)
-        if "CLOUDFLARE_ACCOUNT_ID" in message_text or "Cloudflare Workers AI is not configured" in message_text:
-            await send_text(client, chat_id, "ساخت تصویر تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
-        elif "TAVILY_API_KEY" in message_text:
-            await send_text(client, chat_id, "جست‌وجوی وب هنوز فعال نشده؛ TAVILY_API_KEY را در Railway Variables تنظیم کن.", reply_to, MAIN_MENU_MARKUP)
-        elif "No AI provider is configured" in message_text or "not configured" in message_text:
-            await send_text(client, chat_id, "اتصال مدل تنظیم نشده؛ یکی از APMIX_API_KEY، GEMINI_API_KEY، GROQ_API_KEY یا RIVER_API_KEY را در Railway Variables بررسی کن.", reply_to, MAIN_MENU_MARKUP)
-        else:
-            await send_text(client, chat_id, f"نتوانستم این پیام را پردازش کنم: {message_text[:500]}", reply_to, MAIN_MENU_MARKUP)
+        await send_text(client, chat_id, user_facing_error(exc, user_id), reply_to, MAIN_MENU_MARKUP)
 
 
 async def process_callback_query(client: httpx.AsyncClient, callback: dict[str, Any]) -> None:
@@ -2347,6 +2621,31 @@ async def process_callback_query(client: httpx.AsyncClient, callback: dict[str, 
     # Answer promptly so Telegram stops showing the button's loading indicator.
     await telegram_call(client, "answerCallbackQuery", {"callback_query_id": callback_id})
     data = callback.get("data", "")
+    if data in {"answer:continue", "answer:summary"}:
+        session = get_long_answer(user_id)
+        if not session:
+            await send_text(client, chat_id, "این پاسخ دیگر در دسترس نیست؛ پاسخ تازه‌ای بگیر.", reply_markup=MAIN_MENU_MARKUP)
+            return
+        full_text, next_part = session
+        pages = split_telegram_text(full_text, limit=2800)
+        if data == "answer:summary":
+            try:
+                prompt = "این پاسخ را در چند نکتهٔ کوتاه و کاربردی خلاصه کن؛ واقعیت تازه‌ای اضافه نکن:\n\n" + full_text[:MAX_DOC_CHARS]
+                summary = await with_chat_action(client, chat_id, "typing", assistant_reply(client, user_id, prompt, use_history=False))
+                await send_text(client, chat_id, summary, reply_markup=MAIN_MENU_MARKUP)
+                # Keep the original answer available for its remaining pages.
+                save_long_answer(user_id, full_text, next_part)
+            except Exception as exc:
+                log.warning("Long-answer summarization failed: %s", type(exc).__name__)
+                await send_text(client, chat_id, user_facing_error(exc, user_id), reply_markup=MAIN_MENU_MARKUP)
+            return
+        if next_part >= len(pages):
+            await send_text(client, chat_id, "پاسخ به پایان رسیده است؛ می‌توانی خلاصه‌اش را بگیری.", reply_markup=long_answer_markup(False))
+            return
+        page = pages[next_part]
+        update_long_answer_part(user_id, next_part + 1)
+        await send_text(client, chat_id, page, reply_markup=long_answer_markup(next_part + 1 < len(pages)))
+        return
     legacy_actions = {
         "menu:home": "home",
         "menu:chat": "chat",
