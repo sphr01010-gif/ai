@@ -1824,6 +1824,13 @@ def test_error_messages_are_actionable_and_do_not_echo_credentials(monkeypatch):
     assert "Groq" in provider_error and "سهمیه" in provider_error and "جایگزینی خودکار خاموش" in provider_error
 
 
+def test_pollinations_tts_paid_balance_error_is_actionable():
+    error = bot.user_facing_error(RuntimeError("Pollinations has insufficient Pollen balance for TTS; check account balance."))
+    assert "Paid Pollen" in error
+    assert "موجودی" in error
+    assert "این درخواست کامل نشد" not in error
+
+
 def test_unconfirmed_file_draft_expires_after_one_day(tmp_path, monkeypatch):
     from datetime import timedelta
 

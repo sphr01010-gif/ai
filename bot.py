@@ -1001,6 +1001,14 @@ def user_facing_error(exc: Exception, user_id: int | None = None) -> str:
         return context + route_hint + message
     if "tavily_api_key" in detail or "web search is not configured" in detail:
         return "جست‌وجوی وب هنوز تنظیم نشده است؛ در Railway مقدار TAVILY_API_KEY را اضافه کن. برای چت معمولی نیازی به این کلید نیست."
+    if "pollinations" in detail and ("insufficient pollen balance" in detail or "http 402" in detail or "paid pollen" in detail):
+        return "اعتبار Pollinations برای ساخت ویس کافی نیست. مدل Gemini TTS فعلاً به Paid Pollen نیاز دارد؛ موجودی حساب Pollinations را بررسی کن یا پس از شارژ، دوباره امتحان کن. این خطا به کلید تلگرام مربوط نیست."
+    if "pollinations" in detail and any(marker in detail for marker in ("http 401", "http 403", "rejected the api key", "model access")):
+        return "کلید Pollinations پذیرفته نشد یا به مدل ویس دسترسی ندارد؛ در Railway متغیر POLLINATIONS_API_KEY و فعال‌بودن کلید را بررسی کن. مقدار کلید را اینجا نفرست."
+    if "pollinations speech api returned http 400" in detail:
+        return "Pollinations درخواست ویس را نپذیرفت؛ مقدارهای POLLINATIONS_TTS_MODEL و POLLINATIONS_TTS_VOICE را در Railway بررسی کن و متن کوتاه‌تری بفرست."
+    if "pollinations tts rate limit" in detail:
+        return "محدودیت موقت درخواست ویس Pollinations فعال شده است؛ کمی صبر کن و دوباره امتحان کن."
     if "cloudflare_account_id" in detail or ("cloudflare" in detail and "not configured" in detail):
         return "ساخت تصویر تنظیم نشده است؛ مقدارهای CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway بررسی کن."
     if "no ai provider is configured" in detail or ("selected provider" in detail and "not configured" in detail):

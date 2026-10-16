@@ -72,7 +72,7 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 
 ربات از Pollinations `POST /v1/audio/speech` و مدل پیش‌فرض `google/gemini-3.8-flash-tts` برای ساخت MP3 از متن استفاده می‌کند. برای فارسی نیازی به کلید جدا نیست: همان `POLLINATIONS_API_KEY` که برای تصویر تنظیم شده، درخواست ویس را هم احراز هویت می‌کند. پس از deploy دکمهٔ **🔊 ساخت ویس** را بزن و متن را بفرست؛ فایل صوتی به شکل MP3 ارسال می‌شود. مدل به‌صورت پیش‌فرض از صدای `Kore` استفاده می‌کند.
 
-مدل، صدا و سقف متن را با `POLLINATIONS_TTS_MODEL`، `POLLINATIONS_TTS_VOICE` و محدودیت کد (۴۰۰۰ نویسه) کنترل می‌کنی. استفاده از صوت ممکن است از موجودی Pollen کسر کند؛ رایگان/نامحدود بودن تضمین نیست. بر اساس مستندات Gemini، مدل Flash TTS زبان فارسی را پشتیبانی می‌کند.
+مدل، صدا و سقف متن را با `POLLINATIONS_TTS_MODEL`، `POLLINATIONS_TTS_VOICE` و محدودیت کد (۴۰۰۰ نویسه) کنترل می‌کنی. طبق کاتالوگ زندهٔ Pollinations، مدل Gemini TTS فعلاً به **Paid Pollen** نیاز دارد؛ موجودی اولیه یا Quest Pollen را با اعتبار قابل‌استفاده برای این مدل یکی فرض نکن. جزئیات مصرف را در [مستندات Pollinations](https://gen.pollinations.ai/docs) و حساب خودت بررسی کن. بر اساس [فهرست زبان‌های Gemini TTS](https://ai.google.dev/gemini-api/docs/speech-generation)، فارسی پشتیبانی می‌شود.
 
 ## کیفیت پاسخ‌های جست‌وجو
 
