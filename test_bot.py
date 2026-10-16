@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 import zipfile
 from datetime import datetime, timedelta
 
@@ -197,7 +198,7 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر", "🖼 سرویس تصویر", "🧰 ابزارها"}
+    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر", "🖼 سرویس تصویر", "🔊 ساخت ویس", "🧰 ابزارها"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
     assert bot.MENU_BUTTON_ACTIONS["◉ گفت‌وگو"] == "chat"
@@ -205,6 +206,7 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert bot.MENU_BUTTON_ACTIONS["⚙ انتخاب API"] == "provider_menu"
     assert bot.MENU_BUTTON_ACTIONS["▧ ساخت تصویر"] == "create_image"
     assert bot.MENU_BUTTON_ACTIONS["🖼 سرویس تصویر"] == "image_provider_menu"
+    assert bot.MENU_BUTTON_ACTIONS["🔊 ساخت ویس"] == "create_voice"
     assert bot.MENU_BUTTON_ACTIONS["🌼 Pollinations"] == "select_image_provider_pollinations"
     assert bot.MENU_BUTTON_ACTIONS["☁ Cloudflare Flux"] == "select_image_provider_cloudflare"
 
@@ -1423,6 +1425,109 @@ def test_cloudflare_image_http_error_is_reported(monkeypatch):
 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         asyncio.run(run())
+
+
+def test_pollinations_tts_posts_expected_payload_and_returns_audio(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+    monkeypatch.setattr(bot, "POLLINATIONS_TTS_MODEL", "google/gemini-3.8-flash-tts")
+    monkeypatch.setattr(bot, "POLLINATIONS_TTS_VOICE", "Kore")
+    seen = {}
+
+    async def handler(request):
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, headers={"content-type": "audio/mpeg"}, content=b"fake-mp3-audio")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.pollinations_generate_speech(client, "سلام، حال شما چطور است؟")
+
+    assert asyncio.run(run()) == b"fake-mp3-audio"
+    assert seen == {
+        "url": "https://gen.pollinations.ai/v1/audio/speech",
+        "authorization": "Bearer test-pollen-key",
+        "payload": {
+            "model": "google/gemini-3.8-flash-tts",
+            "input": "سلام، حال شما چطور است؟",
+            "voice": "Kore",
+            "response_format": "mp3",
+        },
+    }
+
+
+def test_pollinations_tts_handles_key_quota_and_invalid_audio(monkeypatch):
+    import httpx
+    import pytest
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+
+    async def response_for(status, content_type="audio/mpeg", body=b"audio"):
+        async def handler(request):
+            return httpx.Response(status, headers={"content-type": content_type}, content=body)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.pollinations_generate_speech(client, "test")
+
+    async def missing_key():
+        monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "")
+        async with httpx.AsyncClient() as client:
+            return await bot.pollinations_generate_speech(client, "test")
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        asyncio.run(missing_key())
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+    with pytest.raises(RuntimeError, match="insufficient Pollen balance"):
+        asyncio.run(response_for(402, "application/json", b"{}"))
+    with pytest.raises(RuntimeError, match="invalid or empty audio"):
+        asyncio.run(response_for(200, "application/json", b"{}"))
+    with pytest.raises(ValueError, match="۴۰۰۰"):
+        async def too_long():
+            async with httpx.AsyncClient() as client:
+                await bot.pollinations_generate_speech(client, "x" * 4001)
+        asyncio.run(too_long())
+
+
+def test_voice_button_routes_text_to_pollinations_and_sends_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "tts.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+    bot.init_db()
+    generated = []
+    sent = []
+
+    async def fake_telegram_call(client, method, payload):
+        return {"ok": True}
+
+    async def fake_generator(client, text):
+        generated.append(text)
+        return b"mp3-data"
+
+    async def fake_send_voice(client, chat_id, audio, caption, reply_to=None):
+        sent.append((chat_id, audio, caption, reply_to))
+
+    async def fake_with_chat_action(client, chat_id, action, operation):
+        return await operation
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "pollinations_generate_speech", fake_generator)
+    monkeypatch.setattr(bot, "send_voice", fake_send_voice)
+    monkeypatch.setattr(bot, "with_chat_action", fake_with_chat_action)
+
+    async def exercise():
+        await bot.process_message(object(), {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "🔊 ساخت ویس", "message_id": 10,
+        })
+        assert bot.get_user_state(123) == "await_voice_text"
+        await bot.process_message(object(), {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "سلام، به ربات من خوش آمدید.", "message_id": 11,
+        })
+
+    asyncio.run(exercise())
+    assert generated == ["سلام، به ربات من خوش آمدید."]
+    assert sent == [(123, b"mp3-data", "ویس ساخته‌شده با Pollinations / Gemini TTS", 11)]
+    assert bot.get_user_state(123) is None
 
 
 def test_pollinations_image_get_uses_bearer_key_and_returns_image(monkeypatch):

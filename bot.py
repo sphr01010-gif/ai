@@ -49,6 +49,8 @@ CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", "").strip()
 POLLINATIONS_IMAGE_MODEL = os.getenv("POLLINATIONS_IMAGE_MODEL", "black-forest-labs/flux.1-schnell").strip()
+POLLINATIONS_TTS_MODEL = os.getenv("POLLINATIONS_TTS_MODEL", "google/gemini-3.8-flash-tts").strip()
+POLLINATIONS_TTS_VOICE = os.getenv("POLLINATIONS_TTS_VOICE", "Kore").strip()
 AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq,river,radox").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
@@ -85,6 +87,7 @@ MAIN_MENU_MARKUP = {
         [{"text": "◉ گفت‌وگو"}, {"text": "⌕ جست‌وجوی وب"}],
         [{"text": "⚙ انتخاب API"}],
         [{"text": "▧ ساخت تصویر"}, {"text": "🖼 سرویس تصویر"}],
+        [{"text": "🔊 ساخت ویس"}],
         [{"text": "🧰 ابزارها"}],
     ],
     "resize_keyboard": True,
@@ -254,6 +257,8 @@ MENU_BUTTON_ACTIONS = {
     "⚙ انتخاب API": "provider_menu",
     "ساخت تصویر": "create_image",
     "▧ ساخت تصویر": "create_image",
+    "ساخت ویس": "create_voice",
+    "🔊 ساخت ویس": "create_voice",
     "سرویس تصویر": "image_provider_menu",
     "🖼 سرویس تصویر": "image_provider_menu",
     "☁ Cloudflare Flux": "select_image_provider_cloudflare",
@@ -303,7 +308,7 @@ HELP_TEXT = (
     "**قابلیت‌ها**\n"
     "• گفت‌وگوی فارسی و چندزبانه، همراه با تحلیل عکس\n"
     "• جست‌وجوی وب فقط وقتی صریحاً درخواستش کنی\n"
-    "• پیدا کردن عکس واقعی یا ساخت تصویر\n"
+    "• پیدا کردن عکس واقعی یا ساخت تصویر و ویس\n"
     "• ساخت فایل‌های `.py`، `.pdf` و `.zip` با پیش‌نمایش و تأیید ارسال\n"
     "• ادامه یا خلاصه‌کردن پاسخ‌های بلند\n\n"
     "برای حافظهٔ قابل‌کنترل، بررسی/خلاصهٔ فایل، خلاصه‌سازی متن و مقایسهٔ منابع از دکمهٔ «🧰 ابزارها» استفاده کن."
@@ -1873,6 +1878,12 @@ async def handle_menu_action(
         set_user_state(user_id, "await_image_prompt")
         provider_label = "Pollinations" if image_provider == "pollinations" else "Cloudflare FLUX.1 [schnell]"
         await send_text(client, chat_id, f"**ساخت تصویر با {provider_label}**\n\nشرح تصویر را به فارسی یا انگلیسی بفرست؛ تصویر ساخته‌شده همین‌جا نمایش داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "create_voice":
+        if not POLLINATIONS_API_KEY:
+            await send_text(client, chat_id, "تبدیل متن به ویس با Pollinations تنظیم نشده است؛ POLLINATIONS_API_KEY را در Railway Variables اضافه کن.", reply_to, MAIN_MENU_MARKUP)
+        else:
+            set_user_state(user_id, "await_voice_text")
+            await send_text(client, chat_id, "**ساخت ویس فارسی یا چندزبانه**\n\nمتنی را که می‌خواهی با صدا خوانده شود بفرست. فایل MP3 ساخته و در همین گفت‌وگو ارسال می‌شود؛ هزینه/مصرف از موجودی Pollinations حساب می‌شود.", reply_to, MAIN_MENU_MARKUP)
     elif action == "image_provider_menu":
         current = get_user_settings(user_id).get("image_provider", "cloudflare")
         current_label = "Pollinations" if current == "pollinations" else "Cloudflare FLUX.1 [schnell]"
@@ -2327,6 +2338,55 @@ def image_provider_is_configured(provider: str) -> bool:
     return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
 
 
+async def pollinations_generate_speech(client: httpx.AsyncClient, text: str) -> bytes:
+    """Synthesize speech using Pollinations' OpenAI-compatible TTS endpoint."""
+    if not POLLINATIONS_API_KEY:
+        raise RuntimeError("Pollinations is not configured; set POLLINATIONS_API_KEY in Railway Variables.")
+    text=text.strip()
+    if not text:
+        raise ValueError("متن برای تبدیل به ویس خالی است.")
+    if len(text)>4000:
+        raise ValueError("برای ساخت یک ویس، متن را به حداکثر ۴۰۰۰ نویسه کوتاه کن.")
+    response=await client.post(
+        "https://gen.pollinations.ai/v1/audio/speech",
+        headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
+        json={"model": POLLINATIONS_TTS_MODEL, "input": text, "voice": POLLINATIONS_TTS_VOICE, "response_format": "mp3"},
+        timeout=180,
+    )
+    if response.status_code>=400:
+        log.warning("Pollinations speech generation failed with HTTP %s", response.status_code)
+        if response.status_code in {401,403}:
+            raise RuntimeError("Pollinations rejected the API key or TTS model access; check POLLINATIONS_API_KEY and the model setting.")
+        if response.status_code==402:
+            raise RuntimeError("Pollinations has insufficient Pollen balance for TTS; check account balance.")
+        if response.status_code==429:
+            raise RuntimeError("Pollinations TTS rate limit reached; wait and retry.")
+        raise RuntimeError(f"Pollinations speech API returned HTTP {response.status_code}.")
+    content_type=response.headers.get("content-type", "") if hasattr(response,"headers") else ""
+    audio=response.content
+    if not content_type.lower().startswith("audio/") or not audio:
+        raise RuntimeError("Pollinations returned an invalid or empty audio response.")
+    if len(audio)>20*1024*1024:
+        raise RuntimeError("Generated audio is too large to send through Telegram.")
+    return audio
+
+
+async def send_voice(client: httpx.AsyncClient, chat_id: int, audio: bytes, caption: str, reply_to: int | None = None) -> None:
+    data={"chat_id": str(chat_id), "caption": caption[:1024]}
+    if reply_to:
+        data["reply_to_message_id"]=str(reply_to)
+    response=await client.post(
+        f"{TG_API}/sendAudio",
+        data=data,
+        files={"audio": ("generated-voice.mp3", audio, "audio/mpeg")},
+        timeout=70,
+    )
+    response.raise_for_status()
+    body=response.json()
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram could not send generated audio: {body.get('description','unknown error')}")
+
+
 async def pollinations_generate_image(client: httpx.AsyncClient, prompt: str) -> bytes:
     """Generate one image through the Pollinations image endpoint."""
     if not POLLINATIONS_API_KEY:
@@ -2421,7 +2481,7 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     pending_action = get_user_state(user_id)
     active_states = {
         "chat", "tools_menu", "memory_menu", "settings", "summary_menu", "await_search", "await_compare_search",
-        "await_image_prompt", "await_file", "document_chat", "await_reminder", "await_summary_hour", "await_memory",
+        "await_image_prompt", "await_voice_text", "await_file", "document_chat", "await_reminder", "await_summary_hour", "await_memory",
         "await_topic", "await_summary_text", "await_file_edit", "await_file_rename", "await_file_confirmation",
         "confirm_clear", "confirm_clear_memories",
     }
@@ -2511,7 +2571,16 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
     if pending_action == "chat" and message.get("text"):
         set_user_state(user_id, None)
     try:
-        image_search_query = extract_image_search_query(text) if message.get("text") and pending_action not in {"await_image_prompt", "await_summary_text", "await_file_edit", "await_file_rename"} else None
+        if pending_action == "await_voice_text" and message.get("text"):
+            if not text.strip():
+                await send_text(client, chat_id, "متن خالی است؛ متن موردنظر برای ویس را بفرست.", reply_to, MAIN_MENU_MARKUP)
+                return
+            audio=await with_chat_action(client, chat_id, "record_voice", pollinations_generate_speech(client, text))
+            set_user_state(user_id, None)
+            await with_chat_action(client, chat_id, "upload_voice", send_voice(client, chat_id, audio, "ویس ساخته‌شده با Pollinations / Gemini TTS", reply_to))
+            return
+
+        image_search_query = extract_image_search_query(text) if message.get("text") and pending_action not in {"await_image_prompt", "await_voice_text", "await_summary_text", "await_file_edit", "await_file_rename"} else None
         if image_search_query:
             image_result = await with_chat_action(client, chat_id, "typing", commons_find_image(client, image_search_query))
             if not image_result:
