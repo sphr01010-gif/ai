@@ -14,7 +14,7 @@ import random
 import re
 import sqlite3
 import time
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -47,6 +47,8 @@ RADOX_VISION_MODEL = os.getenv("RADOX_VISION_MODEL", "gpt-5.6-luna").strip()
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_FLUX_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", "").strip()
+POLLINATIONS_IMAGE_MODEL = os.getenv("POLLINATIONS_IMAGE_MODEL", "black-forest-labs/flux.1-schnell").strip()
 AI_PROVIDER_ORDER = [name.strip().lower() for name in os.getenv("AI_PROVIDER_ORDER", "apmix,gemini,groq,river,radox").split(",") if name.strip()]
 ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "").strip()
 MODEL = os.getenv("APMIX_MODEL", "claude-sonnet-4-6-free").strip()
@@ -82,13 +84,23 @@ MAIN_MENU_MARKUP = {
     "keyboard": [
         [{"text": "◉ گفت‌وگو"}, {"text": "⌕ جست‌وجوی وب"}],
         [{"text": "⚙ انتخاب API"}],
-        [{"text": "▧ ساخت تصویر"}],
+        [{"text": "▧ ساخت تصویر"}, {"text": "🖼 سرویس تصویر"}],
         [{"text": "🧰 ابزارها"}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
     "input_field_placeholder": "پیام بنویس یا یکی از قابلیت‌ها را انتخاب کن",
+}
+
+IMAGE_PROVIDER_MARKUP = {
+    "keyboard": [
+        [{"text": "☁ Cloudflare Flux"}, {"text": "🌼 Pollinations"}],
+        [{"text": "↩ بازگشت"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "سرویس ساخت تصویر را انتخاب کن",
 }
 
 TOOLS_MARKUP = {
@@ -242,6 +254,10 @@ MENU_BUTTON_ACTIONS = {
     "⚙ انتخاب API": "provider_menu",
     "ساخت تصویر": "create_image",
     "▧ ساخت تصویر": "create_image",
+    "سرویس تصویر": "image_provider_menu",
+    "🖼 سرویس تصویر": "image_provider_menu",
+    "☁ Cloudflare Flux": "select_image_provider_cloudflare",
+    "🌼 Pollinations": "select_image_provider_pollinations",
     "🧰 ابزارها": "tools_menu",
     "🧠 حافظه و یادداشت‌ها": "memory_menu",
     "📄 بررسی/خلاصهٔ فایل": "file",
@@ -392,6 +408,7 @@ DEFAULT_USER_SETTINGS = {
     "history_enabled": True,
     "personal_memory_enabled": True,
     "ai_provider": "auto",
+    "image_provider": "cloudflare",
     "fallback_on_error": False,
     "daily_summary": False,
     "weekly_summary": False,
@@ -414,6 +431,8 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
         settings["ai_provider"] = "groq"
     if settings.get("ai_provider") not in {"auto", "apmix", "gemini", "groq", "river", "radox"}:
         settings["ai_provider"] = "auto"
+    if settings.get("image_provider") not in {"cloudflare", "pollinations"}:
+        settings["image_provider"] = "cloudflare"
     settings["fallback_on_error"] = bool(settings.get("fallback_on_error", False))
     return settings
 
@@ -432,6 +451,8 @@ def set_user_setting(user_id: int, name: str, value: Any) -> dict[str, Any]:
         raise ValueError("Unknown user setting")
     if name == "ai_provider" and value not in {"auto", "apmix", "gemini", "groq", "river", "radox"}:
         raise ValueError("Invalid AI provider")
+    if name == "image_provider" and value not in {"cloudflare", "pollinations"}:
+        raise ValueError("Invalid image provider")
     settings[name] = value
     save_user_settings(user_id, settings)
     return settings
@@ -1844,11 +1865,32 @@ async def handle_menu_action(
         set_user_state(user_id, "tools_menu")
         await send_text(client, chat_id, "## ابزارهای دستیار\n────────────\nحافظهٔ یادداشت‌های اختیاری، بررسی اسناد، خلاصه‌سازی متن و جست‌وجوی منبع‌دار در دسترس‌اند.", reply_to, TOOLS_MARKUP)
     elif action == "create_image":
+        image_provider = get_user_settings(user_id).get("image_provider", "cloudflare")
+        if not image_provider_is_configured(image_provider):
+            missing = "POLLINATIONS_API_KEY" if image_provider == "pollinations" else "CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN"
+            await send_text(client, chat_id, f"سرویس تصویر انتخاب‌شده تنظیم نشده است؛ {missing} را در Railway Variables وارد کن، یا از «🖼 سرویس تصویر» گزینهٔ دیگری را انتخاب کن.", reply_to, IMAGE_PROVIDER_MARKUP)
+            return
+        set_user_state(user_id, "await_image_prompt")
+        provider_label = "Pollinations" if image_provider == "pollinations" else "Cloudflare FLUX.1 [schnell]"
+        await send_text(client, chat_id, f"**ساخت تصویر با {provider_label}**\n\nشرح تصویر را به فارسی یا انگلیسی بفرست؛ تصویر ساخته‌شده همین‌جا نمایش داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "image_provider_menu":
+        current = get_user_settings(user_id).get("image_provider", "cloudflare")
+        current_label = "Pollinations" if current == "pollinations" else "Cloudflare FLUX.1 [schnell]"
+        await send_text(client, chat_id, f"## سرویس ساخت تصویر\n────────────\n**سرویس فعلی:** {current_label}\n\nPollinations به کلید API و موجودی Pollen نیاز دارد؛ استفادهٔ رایگان و نامحدود تضمین‌شده نیست. برای تغییر، یکی از گزینه‌ها را انتخاب کن.", reply_to, IMAGE_PROVIDER_MARKUP)
+    elif action == "select_image_provider_cloudflare":
         if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
-            await send_text(client, chat_id, "ساخت تصویر هنوز تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "Cloudflare تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, IMAGE_PROVIDER_MARKUP)
         else:
+            set_user_setting(user_id, "image_provider", "cloudflare")
             set_user_state(user_id, "await_image_prompt")
-            await send_text(client, chat_id, "**ساخت تصویر با FLUX.1 [schnell]**\n\nشرح تصویر را به فارسی یا انگلیسی بفرست؛ تصویر ساخته‌شده همین‌جا نمایش داده می‌شود.", reply_to, MAIN_MENU_MARKUP)
+            await send_text(client, chat_id, "**Cloudflare FLUX.1 [schnell] انتخاب شد**\n\nشرح تصویر را بفرست.", reply_to, MAIN_MENU_MARKUP)
+    elif action == "select_image_provider_pollinations":
+        if not POLLINATIONS_API_KEY:
+            await send_text(client, chat_id, "Pollinations هنوز تنظیم نشده است؛ کلید را در Railway Variables با نام `POLLINATIONS_API_KEY` اضافه کن، سپس ربات redeploy می‌شود. کلید را در چت یا GitHub نگذار.", reply_to, IMAGE_PROVIDER_MARKUP)
+        else:
+            set_user_setting(user_id, "image_provider", "pollinations")
+            set_user_state(user_id, "await_image_prompt")
+            await send_text(client, chat_id, "**Pollinations انتخاب شد**\n\nشرح تصویر را بفرست. درخواست‌ها از موجودی Pollen حساب Pollinations مصرف می‌کنند.", reply_to, MAIN_MENU_MARKUP)
     elif action == "provider_menu":
         settings = get_user_settings(user_id)
         selected = settings.get("ai_provider", "auto")
@@ -2279,6 +2321,48 @@ async def commons_find_image(client: httpx.AsyncClient, query: str) -> dict[str,
     return remote_fallback
 
 
+def image_provider_is_configured(provider: str) -> bool:
+    if provider == "pollinations":
+        return bool(POLLINATIONS_API_KEY)
+    return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
+
+
+async def pollinations_generate_image(client: httpx.AsyncClient, prompt: str) -> bytes:
+    """Generate one image through the Pollinations image endpoint."""
+    if not POLLINATIONS_API_KEY:
+        raise RuntimeError("Pollinations is not configured; set POLLINATIONS_API_KEY in Railway Variables.")
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("شرح تصویر خالی است؛ دوباره از دکمهٔ ساخت تصویر شروع کن.")
+    if len(prompt) > 2048:
+        raise ValueError("شرح تصویر باید حداکثر ۲۰۴۸ نویسه باشد.")
+    url = "https://gen.pollinations.ai/image/" + quote(prompt, safe="")
+    response = await client.get(
+        url,
+        headers={"Authorization": f"Bearer {POLLINATIONS_API_KEY}"},
+        params={"model": POLLINATIONS_IMAGE_MODEL},
+        timeout=180,
+    )
+    if response.status_code >= 400:
+        log.warning("Pollinations image generation failed with HTTP %s", response.status_code)
+        if response.status_code in {401, 403}:
+            raise RuntimeError("Pollinations rejected the API key or model access; check POLLINATIONS_API_KEY and the selected model.")
+        if response.status_code == 402:
+            raise RuntimeError("Pollinations has insufficient Pollen balance; check the account balance or choose Cloudflare in the image-service menu.")
+        if response.status_code == 429:
+            raise RuntimeError("Pollinations rate limit reached; wait and retry or choose Cloudflare in the image-service menu.")
+        raise RuntimeError(f"Pollinations image API returned HTTP {response.status_code}.")
+    content_type = response.headers.get("content-type", "") if hasattr(response, "headers") else ""
+    if not content_type.lower().startswith("image/"):
+        raise RuntimeError("Pollinations returned a non-image response; check the API key, model access, and Pollen balance.")
+    image = response.content
+    if not image:
+        raise RuntimeError("Pollinations returned an empty image.")
+    if len(image) > 10 * 1024 * 1024:
+        raise RuntimeError("Generated image is larger than Telegram's photo upload limit.")
+    return image
+
+
 async def cloudflare_generate_image(client: httpx.AsyncClient, prompt: str) -> bytes:
     """Generate one image through Cloudflare Workers AI FLUX.1 [schnell]."""
     if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
@@ -2453,20 +2537,24 @@ async def process_message(client: httpx.AsyncClient, message: dict[str, Any]) ->
 
         image_prompt = text.strip() if pending_action == "await_image_prompt" else (extract_image_prompt(text) if message.get("text") and pending_action not in {"await_summary_text", "await_file_edit", "await_file_rename"} else None)
         if image_prompt is not None:
-            if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+            image_provider = get_user_settings(user_id).get("image_provider", "cloudflare")
+            if not image_provider_is_configured(image_provider):
                 set_user_state(user_id, None)
-                await send_text(client, chat_id, "ساخت تصویر تنظیم نشده است؛ CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را در Railway Variables وارد کن.", reply_to, MAIN_MENU_MARKUP)
+                missing = "POLLINATIONS_API_KEY" if image_provider == "pollinations" else "CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN"
+                await send_text(client, chat_id, f"سرویس تصویر انتخاب‌شده تنظیم نشده است؛ {missing} را در Railway Variables وارد کن، یا از «🖼 سرویس تصویر» گزینهٔ دیگری را انتخاب کن.", reply_to, IMAGE_PROVIDER_MARKUP)
                 return
             if not image_prompt:
                 await send_text(client, chat_id, "شرح تصویر خالی است؛ یک بار دیگر توصیف کن.", reply_to, MAIN_MENU_MARKUP)
                 return
             set_user_state(user_id, None)
-            image = await with_chat_action(client, chat_id, "typing", cloudflare_generate_image(client, image_prompt))
+            generator = pollinations_generate_image if image_provider == "pollinations" else cloudflare_generate_image
+            image = await with_chat_action(client, chat_id, "typing", generator(client, image_prompt))
+            provider_label = "Pollinations" if image_provider == "pollinations" else "Cloudflare FLUX.1 [schnell]"
             await with_chat_action(
                 client,
                 chat_id,
                 "upload_photo",
-                send_photo(client, chat_id, image, "تصویر ساخته‌شده با FLUX.1 [schnell].", reply_to, MAIN_MENU_MARKUP),
+                send_photo(client, chat_id, image, f"تصویر ساخته‌شده با {provider_label}.", reply_to, MAIN_MENU_MARKUP),
             )
             return
 

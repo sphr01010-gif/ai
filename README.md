@@ -11,7 +11,7 @@
 - **◉ گفت‌وگو:** متن دلخواهت را بفرست.
 - **⌕ جست‌وجوی وب:** پرسشت را بفرست تا پاسخ همراه منبع بگیری؛ جست‌وجو فقط با درخواست صریح اجرا می‌شود.
 - **⚙ انتخاب API:** برای چت APMIX، Gemini، Groq، River، RadoxAI یا «خودکار» را انتخاب کن. انتخاب برای حساب تلگرامی تو ذخیره می‌شود؛ در انتخاب دستی، جایگزینی خودکار خاموش است مگر اینکه گزینهٔ «جایگزینی هنگام خطا» را روشن کنی.
-- **▧ ساخت تصویر:** یک توضیح کوتاه بفرست تا Cloudflare FLUX.1 [schnell] تصویر را تولید کند؛ این گزینه به Cloudflare Account ID و API Token نیاز دارد.
+- **▧ ساخت تصویر:** یک توضیح کوتاه بفرست تا سرویس تصویر انتخاب‌شده، Cloudflare FLUX یا Pollinations، تصویر را تولید و در تلگرام ارسال کند. از دکمهٔ **🖼 سرویس تصویر** می‌توانی بین آن‌ها جابه‌جا شوی.
 - **🧰 ابزارها:** زیرمنوی حافظه و یادداشت‌های صریح، بررسی و خلاصهٔ فایل، خلاصه‌سازی متن و مقایسهٔ چندمنبعی جست‌وجوی وب.
 
 پاسخ‌ها برای خوانایی بهتر، عنوان‌ها، فهرست‌های تو‌در‌تو، نقل‌قول، متن پررنگ/کج/خط‌خورده، کد و پیوندهای امن را با قالب Telegram نمایش می‌دهند؛ قالب پاسخ هم برای صفحهٔ باریک موبایل به پاراگراف‌ها و فهرست‌های کوتاه تشویق می‌شود. متن HTML خام escape می‌شود تا محتوای معمولی به‌اشتباه به‌عنوان قالب اجرا نشود. پاسخ‌های بلند به صفحه‌های قابل‌خواندن تقسیم می‌شوند و دکمهٔ **ادامهٔ پاسخ** و **خلاصهٔ پاسخ** می‌گیرند. هنگام فکرکردن، جست‌وجو، ساخت تصویر یا آماده‌سازی فایل، نشانگر «در حال نوشتن/ارسال» متناسب نمایش داده می‌شود.
@@ -59,11 +59,13 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 
 قابلیت‌های جدید به شکل registry در `bot.py` پیاده شده‌اند؛ ابزار تازه را با تابع `register_api_tool(name, matcher, handler)` می‌توان اضافه کرد، تا intent مناسب به handler همان API هدایت شود. ابزارهای داده‌ای پاسخ را از مقدار بازگشتی API می‌سازند و هنگام شکست سرویس مقدار حدسی نمی‌دهند. Open-Meteo و Frankfurter در نمونهٔ فعلی به کلید جداگانه نیاز ندارند؛ شرایط مجوز Open-Meteo را برای استفادهٔ تجاری جداگانه بررسی کن.
 
-## ساخت تصویر با Cloudflare Workers AI
+## ساخت تصویر با Cloudflare یا Pollinations
 
-در داشبورد Cloudflare از بخش **Workers AI → Use REST API** یک Workers AI API Token بساز و **Account ID** را بردار. اگر به‌جای token آماده، token سفارشی می‌سازی، مستندات Cloudflare برای این API مجوزهای `Workers AI - Read` و `Workers AI - Edit` را ذکر می‌کند. هر دو مقدار را فقط در Railway → Service → Variables با نام‌های `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` قرار بده؛ token را در GitHub یا گفتگو نفرست.
+**Cloudflare Workers AI** را مثل قبل می‌توانی استفاده کنی: در داشبورد Cloudflare از بخش **Workers AI → Use REST API** یک Workers AI API Token بساز و **Account ID** را بردار. مقدارهای `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` را فقط در Railway → Service → Variables قرار بده؛ token را در GitHub یا گفتگو نفرست. مدل این مسیر `@cf/black-forest-labs/flux-1-schnell` است.
 
-پس از deploy، روی دکمهٔ «ساخت تصویر» بزن و prompt را در پیام بعدی بفرست؛ یا مستقیم بنویس «یک تصویر از یک گربهٔ فضانورد بساز» / `Generate an image of a space cat`. ربات از مدل `@cf/black-forest-labs/flux-1-schnell` و مقدار `steps=4` استفاده می‌کند و خروجی را به‌صورت عکس تلگرام می‌فرستد. prompt حداکثر ۲۰۴۸ نویسه است. ممکن است اجرای Workers AI طبق سهمیه/طرح حساب Cloudflare هزینه یا محدودیت مصرف داشته باشد؛ جزئیات را پیش از استفاده بررسی کن.
+برای استفاده از **Pollinations**، در [صفحهٔ کلیدهای Pollinations](https://enter.pollinations.ai/keys) یک کلید بساز و آن را در Railway → Service → Variables با نام `POLLINATIONS_API_KEY` قرار بده. مدل پیش‌فرض `black-forest-labs/flux.1-schnell` است و با متغیر `POLLINATIONS_IMAGE_MODEL` قابل تغییر است. ربات به endpoint رسمی `https://gen.pollinations.ai/image/{prompt}` با احراز هویت Bearer وصل می‌شود؛ جزئیات مدل‌ها و هزینه را در [مستندات Pollinations](https://gen.pollinations.ai/docs) ببین.
+
+پس از deploy، از تلگرام **🖼 سرویس تصویر** را باز کن و Cloudflare یا Pollinations را انتخاب کن؛ انتخاب در تنظیمات حساب ربات ذخیره می‌شود. سپس **▧ ساخت تصویر** را بزن و prompt را بفرست، یا مستقیم درخواست ساخت تصویر بنویس. Pollinations به موجودی Pollen نیاز دارد؛ صفحهٔ رسمی مقداری Quest Pollen را برای شروع/انجام Questها ذکر می‌کند، اما رایگان‌بودن یا استفادهٔ نامحدود تضمین نشده است. در خطای کمبود موجودی یا محدودیت مصرف، از **🖼 سرویس تصویر** به Cloudflare برگرد. این fallback دستی است تا ربات بدون اجازه‌ات سراغ سرویس دیگری با هزینه/سهمیهٔ جداگانه نرود. هر دو مسیر حداکثر ۲۰۴۸ نویسه برای prompt می‌پذیرند.
 
 ## کیفیت پاسخ‌های جست‌وجو
 
@@ -118,7 +120,8 @@ Gemini در خطاهای موقتی `408`، `429` و `5xx` حداکثر دو ب�
 - `RADOX_VISION_MODEL` — مدل RadoxAI برای ورودی تصویر؛ پیش‌فرض `gpt-5.6-luna` که باید در حساب فعال و دارای قابلیت Vision باشد.
 - `AI_PROVIDER_ORDER` — ترتیب تلاش و fallback در حالت خودکار؛ پیش‌فرض `apmix,gemini,groq,river,radox`، برای اولویت‌دادن به RadoxAI مقدار `radox,apmix,gemini,groq,river` بگذار؛ برای River مقدار `river,apmix,gemini,groq,radox` بگذار؛ برای Groq مقدار `groq,apmix,gemini,river,radox` بگذار. در حالت انتخاب دستی fallback را از دکمهٔ «انتخاب API» کنترل کن.
 - `TAVILY_API_KEY` — کلید Tavily برای جست‌وجوی وب و منابع. برای فعال‌سازی، کلید را از داشبورد Tavily بساز و با همین نام دقیق در Railway → Service → **Variables** اضافه کن؛ سپس سرویس را redeploy کن. تا آن زمان گفت‌وگوی عادی فعال می‌ماند، اما جست‌وجوی وب اجرا نمی‌شود. کلید را در چت یا GitHub نفرست.
-- `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` — اختیاری؛ برای ساخت تصویر با Cloudflare Workers AI. این token جدا از کلیدهای APMIX و Gemini است.
+- `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` — اختیاری؛ برای ساخت تصویر با Cloudflare Workers AI.
+- `POLLINATIONS_API_KEY` و `POLLINATIONS_IMAGE_MODEL` — اختیاری؛ برای ساخت تصویر با Pollinations، به‌ترتیب کلید API و شناسهٔ مدل.
 - `TIMEZONE` — منطقهٔ زمانی؛ پیش‌فرض `Asia/Tehran`.
 - `BOT_DATA_DIR` — در Railway مقدار `/data`.
 

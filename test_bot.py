@@ -197,13 +197,16 @@ def test_start_message_includes_persistent_reply_menu(tmp_path, monkeypatch):
     assert method == "sendMessage"
     assert payload["reply_markup"] == bot.MAIN_MENU_MARKUP
     button_labels = {button["text"] for row in payload["reply_markup"]["keyboard"] for button in row}
-    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر", "🧰 ابزارها"}
+    assert button_labels == {"◉ گفت‌وگو", "⌕ جست‌وجوی وب", "⚙ انتخاب API", "▧ ساخت تصویر", "🖼 سرویس تصویر", "🧰 ابزارها"}
     assert payload["reply_markup"]["is_persistent"] is True
     assert payload["reply_markup"]["resize_keyboard"] is True
     assert bot.MENU_BUTTON_ACTIONS["◉ گفت‌وگو"] == "chat"
     assert bot.MENU_BUTTON_ACTIONS["⌕ جست‌وجوی وب"] == "search"
     assert bot.MENU_BUTTON_ACTIONS["⚙ انتخاب API"] == "provider_menu"
     assert bot.MENU_BUTTON_ACTIONS["▧ ساخت تصویر"] == "create_image"
+    assert bot.MENU_BUTTON_ACTIONS["🖼 سرویس تصویر"] == "image_provider_menu"
+    assert bot.MENU_BUTTON_ACTIONS["🌼 Pollinations"] == "select_image_provider_pollinations"
+    assert bot.MENU_BUTTON_ACTIONS["☁ Cloudflare Flux"] == "select_image_provider_cloudflare"
 
 
 def test_removed_menu_options_are_hidden_and_inert(tmp_path, monkeypatch):
@@ -1420,6 +1423,122 @@ def test_cloudflare_image_http_error_is_reported(monkeypatch):
 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         asyncio.run(run())
+
+
+def test_pollinations_image_get_uses_bearer_key_and_returns_image(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+    monkeypatch.setattr(bot, "POLLINATIONS_IMAGE_MODEL", "black-forest-labs/flux.1-schnell")
+    seen = {}
+
+    async def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["model"] = request.url.params.get("model")
+        return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"generated-jpeg")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.pollinations_generate_image(client, "a red fox")
+
+    assert asyncio.run(run()) == b"generated-jpeg"
+    assert seen == {
+        "method": "GET",
+        "path": "/image/a red fox",
+        "auth": "Bearer test-pollen-key",
+        "model": "black-forest-labs/flux.1-schnell",
+    }
+
+
+def test_pollinations_image_reports_insufficient_balance(monkeypatch):
+    import httpx
+    import pytest
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+
+    async def handler(request):
+        return httpx.Response(402, text="insufficient balance")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.pollinations_generate_image(client, "a red fox")
+
+    with pytest.raises(RuntimeError, match="insufficient Pollen balance"):
+        asyncio.run(run())
+
+
+def test_pollinations_image_requires_key_and_rejects_non_image(monkeypatch):
+    import httpx
+    import pytest
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "")
+
+    async def run_without_key():
+        async with httpx.AsyncClient() as client:
+            return await bot.pollinations_generate_image(client, "a red fox")
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        asyncio.run(run_without_key())
+
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "application/json"}, json={"error": "no image"})
+
+    async def run_non_image():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await bot.pollinations_generate_image(client, "a red fox")
+
+    with pytest.raises(RuntimeError, match="non-image response"):
+        asyncio.run(run_non_image())
+
+
+def test_pollinations_selection_persists_and_prompt_routes_to_pollinations(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "DB_PATH", tmp_path / "image-provider.sqlite3")
+    monkeypatch.setattr(bot, "ALLOWED_USER_ID", "123")
+    monkeypatch.setattr(bot, "POLLINATIONS_API_KEY", "test-pollen-key")
+    monkeypatch.setattr(bot, "CLOUDFLARE_ACCOUNT_ID", "")
+    monkeypatch.setattr(bot, "CLOUDFLARE_API_TOKEN", "")
+    bot.init_db()
+    sent_photos = []
+    generated_prompts = []
+
+    async def fake_telegram_call(client, method, payload):
+        return {"ok": True}
+
+    async def fake_generator(client, prompt):
+        generated_prompts.append(prompt)
+        return b"pollinations-image"
+
+    async def unexpected_cloudflare(client, prompt):
+        raise AssertionError("Cloudflare should not be called when Pollinations is selected")
+
+    async def fake_with_chat_action(client, chat_id, action, operation):
+        return await operation
+
+    async def fake_send_photo(client, chat_id, image, caption, reply_to=None, reply_markup=None, **kwargs):
+        sent_photos.append((image, caption))
+
+    monkeypatch.setattr(bot, "telegram_call", fake_telegram_call)
+    monkeypatch.setattr(bot, "pollinations_generate_image", fake_generator)
+    monkeypatch.setattr(bot, "cloudflare_generate_image", unexpected_cloudflare)
+    monkeypatch.setattr(bot, "with_chat_action", fake_with_chat_action)
+    monkeypatch.setattr(bot, "send_photo", fake_send_photo)
+
+    async def exercise():
+        await bot.process_message(object(), {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "🌼 Pollinations",
+        })
+        assert bot.get_user_settings(123)["image_provider"] == "pollinations"
+        await bot.process_message(object(), {
+            "from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "a small red fox",
+        })
+
+    asyncio.run(exercise())
+    assert generated_prompts == ["a small red fox"]
+    assert sent_photos == [(b"pollinations-image", "تصویر ساخته‌شده با Pollinations.")]
 
 
 def test_tools_menu_exposes_memory_file_summary_and_source_comparison(tmp_path, monkeypatch):
